@@ -1,0 +1,54 @@
+import { useWarehouse } from "./warehouse";
+
+export type Permissions = {
+  role: string;
+  canScanProducts: boolean;
+  canRegisterProducts: boolean;
+  canEditProducts: boolean;
+  canDeleteProducts: boolean;
+  canAdjustQuantity: boolean;
+  canRelocateProducts: boolean;
+  canViewInventory: boolean;
+  canExportInventory: boolean;
+  canViewReports: boolean;
+  canCreateWarehouse: boolean;
+  canEditWarehouse: boolean;
+  canDeleteWarehouse: boolean;
+  canManageStaff: boolean;
+  canAssignRoles: boolean;
+  canPromoteToSuperAdmin: boolean;
+  canEditSettings: boolean;
+  canViewLabelPrinting: boolean;
+};
+
+export function usePermissions(): Permissions {
+  const { userRole } = useWarehouse();
+  const role = userRole || "staff";
+
+  const isSuperAdmin = role === "super_admin";
+  const isManager = role === "manager";
+
+  return {
+    role,
+    // All roles
+    canScanProducts: true,
+    canRegisterProducts: true,
+    canAdjustQuantity: true,
+    canRelocateProducts: true,
+    canViewInventory: true,
+    // Manager and above
+    canEditProducts: isSuperAdmin || isManager,
+    canDeleteProducts: isSuperAdmin || isManager,
+    canExportInventory: isSuperAdmin || isManager,
+    canViewReports: isSuperAdmin || isManager,
+    canEditWarehouse: isSuperAdmin || isManager,
+    canManageStaff: isSuperAdmin || isManager,
+    canAssignRoles: isSuperAdmin || isManager,
+    canEditSettings: isSuperAdmin || isManager,
+    canViewLabelPrinting: isSuperAdmin || isManager,
+    // Super admin only
+    canCreateWarehouse: isSuperAdmin,
+    canDeleteWarehouse: isSuperAdmin,
+    canPromoteToSuperAdmin: isSuperAdmin,
+  };
+}

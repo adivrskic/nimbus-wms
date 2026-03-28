@@ -5,9 +5,10 @@ import * as SplashScreen from "expo-splash-screen";
 import { useEffect } from "react";
 import "react-native-reanimated";
 import { AuthProvider, useAuth } from "../lib/auth";
-
+import { ThemeProvider } from "../lib/theme";
+import { ToastProvider } from "../lib/ui";
+import { WarehouseProvider } from "../lib/warehouse";
 export { ErrorBoundary } from "expo-router";
-
 SplashScreen.preventAutoHideAsync();
 
 function useProtectedRoute() {
@@ -35,24 +36,8 @@ function RootLayoutNav() {
     <Stack>
       <Stack.Screen name="login" options={{ headerShown: false }} />
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-      <Stack.Screen
-        name="product/[id]"
-        options={{
-          title: "Product Details",
-          headerStyle: { backgroundColor: "#22234F" },
-          headerTintColor: "#FFF",
-          headerBackTitle: "Back",
-        }}
-      />
-      <Stack.Screen
-        name="analytics"
-        options={{
-          title: "Analytics",
-          headerStyle: { backgroundColor: "#22234F" },
-          headerTintColor: "#FFF",
-          headerBackTitle: "Back",
-        }}
-      />
+      <Stack.Screen name="analytics" options={{ headerShown: false }} />
+      <Stack.Screen name="product/[id]" options={{ headerShown: false }} />
       <Stack.Screen name="modal" options={{ presentation: "modal" }} />
     </Stack>
   );
@@ -78,8 +63,14 @@ export default function RootLayout() {
   }
 
   return (
-    <AuthProvider>
-      <RootLayoutNav />
-    </AuthProvider>
+    <ThemeProvider>
+      <AuthProvider>
+        <WarehouseProvider>
+          <ToastProvider>
+            <RootLayoutNav />
+          </ToastProvider>
+        </WarehouseProvider>
+      </AuthProvider>
+    </ThemeProvider>
   );
 }

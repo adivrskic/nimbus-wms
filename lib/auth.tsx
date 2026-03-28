@@ -1,3 +1,4 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Session } from "@supabase/supabase-js";
 import * as LocalAuthentication from "expo-local-authentication";
 import { createContext, useContext, useEffect, useState } from "react";
@@ -45,24 +46,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const creds = await getCredentials();
     if (creds) {
       try {
-        const hasHardware = await LocalAuthentication.hasHardwareAsync();
-        const isEnrolled = await LocalAuthentication.isEnrolledAsync();
+        // Check if user has disabled biometric
+        const bioPref = await AsyncStorage.getItem("nimbus_pref_biometric");
+        const biometricEnabled = bioPref !== "false"; // default true
 
-        if (hasHardware && isEnrolled) {
-          const result = await LocalAuthentication.authenticateAsync({
-            promptMessage: "Sign in to Nimbus WMS",
-            fallbackLabel: "Use password",
-            disableDeviceFallback: false,
-          });
+        if (biometricEnabled) {
+          const hasHardware = await LocalAuthentication.hasHardwareAsync();
+          const isEnrolled = await LocalAuthentication.isEnrolledAsync();
 
-          if (result.success) {
-            const { data, error } = await supabase.auth.signInWithPassword({
-              email: creds.email,
-              password: creds.password,
+          if (hasHardware && isEnrolled) {
+            const result = await LocalAuthentication.authenticateAsync({
+              promptMessage: "Sign in to Nimbus WMS",
+              fallbackLabel: "Use password",
+              disableDeviceFallback: false,
             });
 
-            if (!error && data.session) {
-              setSession(data.session);
+            if (result.success) {
+              const { data, error } = await supabase.auth.signInWithPassword({
+                email: creds.email,
+                password: creds.password,
+              });
+
+              if (!error && data.session) {
+                setSession(data.session);
+              }
             }
           }
         }
