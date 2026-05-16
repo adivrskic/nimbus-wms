@@ -13,6 +13,9 @@ import {
   View,
 } from "react-native";
 import { ScreenHeader } from "../../lib/Header";
+import { getCache, setCache } from "../../lib/cache";
+import { useOffline } from "../../lib/offline";
+import { OfflineBanner } from "../../lib/offlineUI";
 import { usePermissions } from "../../lib/permissions";
 import { supabase } from "../../lib/supabase";
 import { useTheme } from "../../lib/theme";
@@ -27,6 +30,7 @@ export default function DashboardScreen() {
   const router = useRouter();
   const T = useTheme();
   const wh = useWarehouse();
+  const { isOnline } = useOffline();
   const { warehouseId, greeting, userName, warehouseName, warehouseAddress } =
     wh;
   const perms = usePermissions();
@@ -66,9 +70,19 @@ export default function DashboardScreen() {
   useEffect(() => {
     if (warehouseId) {
       dashboardCache = null;
-      loadDashboard(false);
+      if (isOnline) {
+        loadDashboard(false);
+      } else {
+        // Offline — try persistent cache
+        getCache<any>("dashboard", warehouseId).then((cached) => {
+          if (cached) {
+            applyCachedData(cached);
+            setLoading(false);
+          }
+        });
+      }
     }
-  }, [warehouseId]);
+  }, [warehouseId, isOnline]);
 
   function applyCachedData(c: any) {
     setProductCount(c.productCount);
@@ -145,6 +159,7 @@ export default function DashboardScreen() {
     dashboardCache = cached;
     cacheTimestamp = Date.now();
     applyCachedData(cached);
+    setCache("dashboard", cached, warehouseId!);
     setLoading(false);
     setRefreshing(false);
   }
@@ -243,6 +258,7 @@ export default function DashboardScreen() {
       />
 
       <View style={[s.contentWrap, { backgroundColor: T.background }]}>
+        <OfflineBanner />
         <ScrollView
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"

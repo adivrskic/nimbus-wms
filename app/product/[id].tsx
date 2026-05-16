@@ -18,6 +18,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { useOffline } from "../../lib/offline";
 import { usePermissions } from "../../lib/permissions";
 import { supabase } from "../../lib/supabase";
 import { useTheme } from "../../lib/theme";
@@ -49,6 +50,7 @@ export default function ProductDetailScreen() {
   const T = useTheme();
   const { warehouseId } = useWarehouse();
   const perms = usePermissions();
+  const { isOnline, queueOperation } = useOffline();
   const scrollY = useRef(new Animated.Value(0)).current;
   const [product, setProduct] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -131,6 +133,31 @@ export default function ProductDetailScreen() {
     haptic.medium();
     const fromStr = `${currentLoc.sections?.code}-Bay${currentLoc.bay}-L${currentLoc.level}`;
     const toStr = `${selectedSection.code}-Bay${selectedBay}-L${selectedLevel}`;
+
+    if (!isOnline) {
+      await queueOperation({
+        type: "relocate",
+        warehouseId: warehouseId || "",
+        payload: {
+          locationId: currentLoc.id,
+          newSectionId: selectedSection.id,
+          newBay: selectedBay,
+          newLevel: selectedLevel,
+          productId: product.id,
+          fromLocationLabel: fromStr,
+          toLocationLabel: toStr,
+        },
+      });
+      haptic.success();
+      Alert.alert(
+        "Queued offline",
+        `Relocation will sync when you're back online.`
+      );
+      setShowRelocate(false);
+      setRelocating(false);
+      return;
+    }
+
     const { error } = await supabase
       .from("locations")
       .update({
@@ -184,8 +211,26 @@ export default function ProductDetailScreen() {
   async function adjustQuantity(locationId: string, delta: number) {
     const loc = product?.locations?.find((l: any) => l.id === locationId);
     if (!loc) return;
-    const newQty = Math.max(0, loc.quantity + delta);
     haptic.medium();
+
+    if (!isOnline) {
+      await queueOperation({
+        type: "adjust",
+        warehouseId: warehouseId || "",
+        payload: { locationId, delta, productId: product.id },
+      });
+      // Optimistic update
+      const newQty = Math.max(0, loc.quantity + delta);
+      setProduct((prev: any) => ({
+        ...prev,
+        locations: prev.locations.map((l: any) =>
+          l.id === locationId ? { ...l, quantity: newQty } : l
+        ),
+      }));
+      return;
+    }
+
+    const newQty = Math.max(0, loc.quantity + delta);
     const { error } = await supabase
       .from("locations")
       .update({ quantity: newQty })

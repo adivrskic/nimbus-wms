@@ -16,6 +16,9 @@ import {
   View,
 } from "react-native";
 import { ScreenHeader, useHeaderScroll } from "../../lib/Header";
+import { getCache, setCache } from "../../lib/cache";
+import { useOffline } from "../../lib/offline";
+import { OfflineBanner } from "../../lib/offlineUI";
 import { usePermissions } from "../../lib/permissions";
 import { supabase } from "../../lib/supabase";
 import { useTheme } from "../../lib/theme";
@@ -58,6 +61,7 @@ const SORT_OPTIONS: { value: SortOption; label: string; icon: string }[] = [
 export default function InventoryScreen() {
   const wh = useWarehouse();
   const perms = usePermissions();
+  const { isOnline } = useOffline();
   const router = useRouter();
   const T = useTheme();
 
@@ -79,8 +83,19 @@ export default function InventoryScreen() {
   );
 
   useEffect(() => {
-    if (wh.warehouseId) loadProducts();
-  }, [wh.warehouseId]);
+    if (wh.warehouseId) {
+      if (isOnline) {
+        loadProducts();
+      } else {
+        getCache<any[]>("inventory", wh.warehouseId).then((cached) => {
+          if (cached) {
+            setProducts(cached);
+            setLoading(false);
+          }
+        });
+      }
+    }
+  }, [wh.warehouseId, isOnline]);
 
   async function loadProducts() {
     if (!wh.warehouseId) return;
@@ -92,7 +107,10 @@ export default function InventoryScreen() {
       )
       .eq("locations.warehouse_id", wh.warehouseId)
       .order("created_at", { ascending: false });
-    if (!error && data) setProducts(data);
+    if (!error && data) {
+      setProducts(data);
+      setCache("inventory", data, wh.warehouseId);
+    }
     setPage(1);
     setLoading(false);
     setRefreshing(false);
@@ -188,6 +206,7 @@ export default function InventoryScreen() {
     <View style={[s.screen, { backgroundColor: T.background }]}>
       <ScreenHeader {...wh} scrollY={scrollY} />
       <View style={s.content}>
+        <OfflineBanner />
         {!loading && (
           <View
             style={[

@@ -5,6 +5,8 @@ import * as SplashScreen from "expo-splash-screen";
 import { useEffect } from "react";
 import "react-native-reanimated";
 import { AuthProvider, useAuth } from "../lib/auth";
+import { OfflineProvider } from "../lib/offline";
+import { ConflictModal } from "../lib/offlineUI";
 import { ThemeProvider } from "../lib/theme";
 import { ToastProvider } from "../lib/ui";
 import { WarehouseProvider } from "../lib/warehouse";
@@ -33,13 +35,16 @@ function RootLayoutNav() {
   useProtectedRoute();
 
   return (
-    <Stack>
-      <Stack.Screen name="login" options={{ headerShown: false }} />
-      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-      <Stack.Screen name="analytics" options={{ headerShown: false }} />
-      <Stack.Screen name="product/[id]" options={{ headerShown: false }} />
-      <Stack.Screen name="modal" options={{ presentation: "modal" }} />
-    </Stack>
+    <>
+      <Stack>
+        <Stack.Screen name="login" options={{ headerShown: false }} />
+        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        <Stack.Screen name="analytics" options={{ headerShown: false }} />
+        <Stack.Screen name="product/[id]" options={{ headerShown: false }} />
+        <Stack.Screen name="modal" options={{ presentation: "modal" }} />
+      </Stack>
+      <ConflictModal />
+    </>
   );
 }
 
@@ -66,9 +71,11 @@ export default function RootLayout() {
     <ThemeProvider>
       <AuthProvider>
         <WarehouseProvider>
-          <ToastProvider>
-            <RootLayoutNav />
-          </ToastProvider>
+          <OfflineProvider>
+            <ToastProvider>
+              <RootLayoutNav />
+            </ToastProvider>
+          </OfflineProvider>
         </WarehouseProvider>
       </AuthProvider>
     </ThemeProvider>

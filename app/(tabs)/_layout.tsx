@@ -19,6 +19,7 @@ import {
 } from "react-native";
 import Svg, { Path } from "react-native-svg";
 import { THEME } from "../../lib/config";
+import { PendingBadge } from "../../lib/offlineUI";
 import { supabase } from "../../lib/supabase";
 import { useTheme } from "../../lib/theme";
 import { haptic } from "../../lib/ui";
@@ -693,6 +694,7 @@ function ScanButton({
       >
         <Animated.View style={[styles.scanOuter, { transform: [{ scale }] }]}>
           <Animated.View
+            pointerEvents="none"
             style={[
               styles.glowLayer,
               {
@@ -716,6 +718,7 @@ function ScanButton({
             />
           </Animated.View>
           <Animated.View
+            pointerEvents="none"
             style={[
               styles.glowLayer,
               {
@@ -739,6 +742,7 @@ function ScanButton({
             />
           </Animated.View>
           <Animated.View
+            pointerEvents="none"
             style={[
               styles.glowLayer,
               {
@@ -774,6 +778,12 @@ function ScanButton({
             >
               <FontAwesome name="barcode" size={24} color="#FFF" />
             </LinearGradient>
+          </View>
+          <View
+            pointerEvents="none"
+            style={{ position: "absolute", top: 8, right: 8 }}
+          >
+            <PendingBadge />
           </View>
         </Animated.View>
       </TouchableOpacity>

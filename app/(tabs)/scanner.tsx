@@ -19,6 +19,8 @@ import {
   View,
 } from "react-native";
 import { ScreenHeader, useHeaderScroll } from "../../lib/Header";
+import { useOffline } from "../../lib/offline";
+import { OfflineBanner } from "../../lib/offlineUI";
 import { supabase } from "../../lib/supabase";
 import { useTheme } from "../../lib/theme";
 import { haptic } from "../../lib/ui";
@@ -148,6 +150,7 @@ function Crosshair({ scanned, T }: { scanned: boolean; T: any }) {
 
 export default function ScannerScreen() {
   const wh = useWarehouse();
+  const { isOnline, queueOperation } = useOffline();
   const router = useRouter();
   const T = useTheme();
 
@@ -296,6 +299,40 @@ export default function ScannerScreen() {
       setLoading(false);
       return;
     }
+
+    // OFFLINE: queue the operation
+    if (!isOnline) {
+      await queueOperation({
+        type: "register",
+        warehouseId: wh.warehouseId,
+        payload: {
+          product: {
+            barcode: barcode.trim(),
+            name: name.trim(),
+            category,
+            weight: weight.trim() || null,
+            notes: notes.trim() || null,
+          },
+          location: {
+            section_id: selectedSection.id,
+            bay: parseInt(bay) || 1,
+            level: parseInt(level) || 1,
+            quantity: parseInt(quantity) || 1,
+            to_location_label: `${selectedSection.code}-Bay${bay}-L${level}`,
+          },
+        },
+      });
+      haptic.success();
+      Alert.alert(
+        "Queued offline",
+        `${name} will be registered when you're back online.`
+      );
+      resetForm();
+      setLoading(false);
+      return;
+    }
+
+    // ONLINE: normal flow
     const { data: product, error: productErr } = await supabase
       .from("products")
       .insert({
@@ -434,6 +471,7 @@ export default function ScannerScreen() {
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
       <ScreenHeader {...wh} scrollY={scrollY} />
+      <OfflineBanner />
 
       <View style={s.cameraWrapper}>
         {cameraReady ? (
@@ -1099,7 +1137,7 @@ export default function ScannerScreen() {
 
 const s = StyleSheet.create({
   cameraWrapper: { flex: 1, backgroundColor: "#000" },
-  camera: { flex: 1 },
+  camera: { flex: 1, marginTop: -50 },
   noCamera: {
     flex: 1,
     justifyContent: "center",
