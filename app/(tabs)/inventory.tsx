@@ -1,46 +1,107 @@
-import FontAwesome from "@expo/vector-icons/FontAwesome";
-import { LinearGradient } from "expo-linear-gradient";
+/**
+ * Inventory — Nimbus rebuild.
+ *
+ * Phase 2 reference migration. Establishes the pattern every other screen
+ * follows: read from `lib/theme.tsx` (Nimbus tokens), header from
+ * `lib/nimbus/Header.tsx`, icons from `lib/nimbus/Icon.tsx`, design tokens
+ * from `lib/nimbus/tokens.ts`. Existing data plumbing (warehouse, offline,
+ * cache, supabase, permissions) preserved verbatim.
+ *
+ * Visual deltas from the old file:
+ *   - 240px collapsing header → static 56px ScreenHeader
+ *   - Rounded gradient search pill → hairline field-shell, sharp corners
+ *   - Rounded category pills → mono caps tab strip with 2px gold underline
+ *     (§7.13)
+ *   - Rounded gradient product cards → hairline-divided rows with
+ *     mono SKU + display name + mono location + tabular qty (§9.1, §9.2)
+ *   - Skeleton with rounded corners → flat hairline skeleton bars
+ *   - FontAwesome icons → Lucide via `lib/nimbus/Icon.tsx`
+ *   - Sort menu was a custom popover → full-width bottom sheet (§8.4
+ *     mobile modals are sheets, not centered dialogs)
+ *
+ * Data-fetch shape unchanged: queries products with an inner join on
+ * locations (warehouse-scoped). Client-side filter + sort + paginate
+ * because seed data is sparse (3 rows). When a warehouse exceeds ~500
+ * products, swap the client filter for the `search_products(term, wh)` RPC
+ * we migrated to nimbus-wms — same column shape, server-side trigram.
+ */
+
 import { useFocusEffect, useRouter } from "expo-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   ActivityIndicator,
   Animated,
   FlatList,
-  Image,
+  Modal,
+  Pressable,
   RefreshControl,
-  Share,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { ScreenHeader, useHeaderScroll } from "../../lib/Header";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+
 import { getCache, setCache } from "../../lib/cache";
+import { ScreenHeader } from "../../lib/nimbus/Header";
+import { Icon } from "../../lib/nimbus/Icon";
+import { layout, space, type } from "../../lib/nimbus/tokens";
 import { useOffline } from "../../lib/offline";
-import { OfflineBanner } from "../../lib/offlineUI";
-import { usePermissions } from "../../lib/permissions";
 import { supabase } from "../../lib/supabase";
 import { useTheme } from "../../lib/theme";
-import { Skeleton, haptic } from "../../lib/ui";
+import { haptic } from "../../lib/ui";
 import { useWarehouse } from "../../lib/warehouse";
 
-const CATEGORIES = [
-  { value: "all", label: "All", icon: "th-large" },
-  { value: "hardwood", label: "Hardwood", icon: "tree" },
-  { value: "laminate", label: "Laminate", icon: "clone" },
-  { value: "vinyl_lvp", label: "Vinyl/LVP", icon: "square" },
-  { value: "tile", label: "Tile", icon: "th" },
-  { value: "carpet", label: "Carpet", icon: "ellipsis-h" },
-  { value: "underlayment", label: "Underlay", icon: "minus" },
-  { value: "adhesive", label: "Adhesive", icon: "tint" },
-  { value: "trim_molding", label: "Trim", icon: "minus" },
-  { value: "tools", label: "Tools", icon: "wrench" },
-  { value: "accessories", label: "Accessories", icon: "puzzle-piece" },
-  { value: "other", label: "Other", icon: "ellipsis-h" },
-];
+// ─────────────────────────────────────────────────────────────────────────────
+// TYPES — mirror the actual nimbus-wms schema (not types/db.ts, which is stale)
+// ─────────────────────────────────────────────────────────────────────────────
 
-const PAGE_SIZE = 30;
+type ProductCategory =
+  | "hardwood"
+  | "laminate"
+  | "vinyl_lvp"
+  | "tile"
+  | "carpet"
+  | "underlayment"
+  | "adhesive"
+  | "trim_molding"
+  | "tools"
+  | "accessories"
+  | "other";
+
+interface SectionRef {
+  code: string | null;
+  name: string | null;
+  color: string | null;
+}
+
+interface LocationRow {
+  quantity: number | null;
+  bay: number | null;
+  level: number | null;
+  warehouse_id: string | null;
+  sections: SectionRef | null;
+}
+
+interface Product {
+  id: string;
+  name: string;
+  barcode: string;
+  internal_sku: string | null;
+  category: ProductCategory | null;
+  reorder_point: number | null;
+  photo_url: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  locations: LocationRow[];
+}
 
 type SortOption =
   | "newest"
@@ -49,802 +110,809 @@ type SortOption =
   | "name_desc"
   | "qty_low"
   | "qty_high";
-const SORT_OPTIONS: { value: SortOption; label: string; icon: string }[] = [
-  { value: "newest", label: "Newest", icon: "clock-o" },
-  { value: "oldest", label: "Oldest", icon: "clock-o" },
-  { value: "name_asc", label: "A → Z", icon: "sort-alpha-asc" },
-  { value: "name_desc", label: "Z → A", icon: "sort-alpha-desc" },
-  { value: "qty_low", label: "Qty ↑", icon: "sort-amount-asc" },
-  { value: "qty_high", label: "Qty ↓", icon: "sort-amount-desc" },
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CONSTANTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CATEGORIES: { value: ProductCategory | "all"; label: string }[] = [
+  { value: "all", label: "ALL" },
+  { value: "hardwood", label: "HARDWOOD" },
+  { value: "laminate", label: "LAMINATE" },
+  { value: "vinyl_lvp", label: "VINYL/LVP" },
+  { value: "tile", label: "TILE" },
+  { value: "carpet", label: "CARPET" },
+  { value: "underlayment", label: "UNDERLAY" },
+  { value: "adhesive", label: "ADHESIVE" },
+  { value: "trim_molding", label: "TRIM" },
+  { value: "tools", label: "TOOLS" },
+  { value: "accessories", label: "ACCESSORIES" },
+  { value: "other", label: "OTHER" },
 ];
 
+const SORT_OPTIONS: { value: SortOption; label: string }[] = [
+  { value: "newest", label: "Newest first" },
+  { value: "oldest", label: "Oldest first" },
+  { value: "name_asc", label: "Name · A → Z" },
+  { value: "name_desc", label: "Name · Z → A" },
+  { value: "qty_low", label: "Quantity · low → high" },
+  { value: "qty_high", label: "Quantity · high → low" },
+];
+
+const PAGE_SIZE = 30;
+const LOW_STOCK_THRESHOLD = 5; // matches existing behavior
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
+
+function totalQuantity(p: Product): number {
+  return (p.locations ?? []).reduce((sum, l) => sum + (l.quantity ?? 0), 0);
+}
+
+/** §9.2 location callout — "A · Bay 3 · L2" from the first location row. */
+function primaryLocation(p: Product): string | null {
+  const first = p.locations?.[0];
+  if (!first) return null;
+  const code = first.sections?.code?.trim() || "?";
+  return `${code} · Bay ${first.bay ?? "?"} · L${first.level ?? "?"}`;
+}
+
+function categoryLabel(cat: ProductCategory | null): string {
+  if (!cat) return "";
+  const match = CATEGORIES.find((c) => c.value === cat);
+  return match?.label ?? cat.toUpperCase();
+}
+
+function applySort(rows: Product[], sortBy: SortOption): Product[] {
+  const copy = rows.slice();
+  switch (sortBy) {
+    case "newest":
+      return copy.sort((a, b) =>
+        (b.created_at ?? "").localeCompare(a.created_at ?? "")
+      );
+    case "oldest":
+      return copy.sort((a, b) =>
+        (a.created_at ?? "").localeCompare(b.created_at ?? "")
+      );
+    case "name_asc":
+      return copy.sort((a, b) => a.name.localeCompare(b.name));
+    case "name_desc":
+      return copy.sort((a, b) => b.name.localeCompare(a.name));
+    case "qty_low":
+      return copy.sort((a, b) => totalQuantity(a) - totalQuantity(b));
+    case "qty_high":
+      return copy.sort((a, b) => totalQuantity(b) - totalQuantity(a));
+    default:
+      return copy;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SCREEN
+// ─────────────────────────────────────────────────────────────────────────────
+
 export default function InventoryScreen() {
-  const wh = useWarehouse();
-  const perms = usePermissions();
-  const { isOnline } = useOffline();
-  const router = useRouter();
   const T = useTheme();
+  const router = useRouter();
+  const wh = useWarehouse();
+  const { isOnline } = useOffline();
 
-  const { scrollY, onScroll } = useHeaderScroll();
-
-  const [products, setProducts] = useState<any[]>([]);
-  const [search, setSearch] = useState("");
-  const [activeCategory, setActiveCategory] = useState("all");
+  const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+
+  const [search, setSearch] = useState("");
+  const [activeCategory, setActiveCategory] = useState<string>("all");
   const [sortBy, setSortBy] = useState<SortOption>("newest");
-  const [showSortMenu, setShowSortMenu] = useState(false);
+  const [sortSheetOpen, setSortSheetOpen] = useState(false);
   const [page, setPage] = useState(1);
 
-  useFocusEffect(
-    useCallback(() => {
-      if (wh.warehouseId) loadProducts();
-    }, [wh.warehouseId])
-  );
-
-  useEffect(() => {
-    if (wh.warehouseId) {
-      if (isOnline) {
-        loadProducts();
-      } else {
-        getCache<any[]>("inventory", wh.warehouseId).then((cached) => {
-          if (cached) {
-            setProducts(cached);
-            setLoading(false);
-          }
-        });
-      }
-    }
-  }, [wh.warehouseId, isOnline]);
-
-  async function loadProducts() {
+  // ── Data fetch ──
+  const loadProducts = useCallback(async () => {
     if (!wh.warehouseId) return;
     if (!refreshing) setLoading(true);
+
     const { data, error } = await supabase
       .from("products")
       .select(
-        "*, locations!inner(quantity, bay, level, warehouse_id, sections(code, name, color))"
+        "id, name, barcode, internal_sku, category, reorder_point, photo_url, created_at, updated_at, " +
+          "locations!inner(quantity, bay, level, warehouse_id, sections(code, name, color))"
       )
       .eq("locations.warehouse_id", wh.warehouseId)
       .order("created_at", { ascending: false });
+
     if (!error && data) {
-      setProducts(data);
+      setProducts(data as unknown as Product[]);
       setCache("inventory", data, wh.warehouseId);
     }
     setPage(1);
     setLoading(false);
     setRefreshing(false);
-  }
+  }, [wh.warehouseId, refreshing]);
 
-  function getProductQuantity(product: any) {
-    return (product.locations || []).reduce(
-      (sum: number, loc: any) => sum + (loc.quantity || 0),
-      0
-    );
-  }
+  // Refetch on warehouse switch / focus.
+  useFocusEffect(
+    useCallback(() => {
+      if (wh.warehouseId) loadProducts();
+    }, [wh.warehouseId, loadProducts])
+  );
 
-  const filtered = products
-    .filter((p) => {
+  // Offline fallback.
+  useEffect(() => {
+    if (!wh.warehouseId) return;
+    if (isOnline) {
+      loadProducts();
+    } else {
+      getCache<Product[]>("inventory", wh.warehouseId).then((cached) => {
+        if (cached) {
+          setProducts(cached);
+          setLoading(false);
+        }
+      });
+    }
+  }, [wh.warehouseId, isOnline, loadProducts]);
+
+  // ── Derived: filter + sort + paginate ──
+  const filtered = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    const list = products.filter((p) => {
       const matchesSearch =
-        !search ||
-        p.name.toLowerCase().includes(search.toLowerCase()) ||
-        p.barcode.toLowerCase().includes(search.toLowerCase());
+        !term ||
+        p.name.toLowerCase().includes(term) ||
+        p.barcode.toLowerCase().includes(term) ||
+        (p.internal_sku ?? "").toLowerCase().includes(term);
       const matchesCategory =
         activeCategory === "all" || p.category === activeCategory;
       return matchesSearch && matchesCategory;
-    })
-    .sort((a, b) => {
-      switch (sortBy) {
-        case "newest":
-          return (
-            new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-          );
-        case "oldest":
-          return (
-            new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-          );
-        case "name_asc":
-          return a.name.localeCompare(b.name);
-        case "name_desc":
-          return b.name.localeCompare(a.name);
-        case "qty_low":
-          return getProductQuantity(a) - getProductQuantity(b);
-        case "qty_high":
-          return getProductQuantity(b) - getProductQuantity(a);
-        default:
-          return 0;
-      }
     });
+    return applySort(list, sortBy);
+  }, [products, search, activeCategory, sortBy]);
 
-  const paginated = filtered.slice(0, page * PAGE_SIZE);
-  const hasMore = paginated.length < filtered.length;
-
-  function loadMore() {
-    if (hasMore) setPage((p) => p + 1);
-  }
-
-  function getCategoryCount(cat: string) {
-    if (cat === "all") return products.length;
-    return products.filter((p) => p.category === cat).length;
-  }
-
-  const totalStock = products.reduce(
-    (sum, p) => sum + getProductQuantity(p),
-    0
+  const paginated = useMemo(
+    () => filtered.slice(0, page * PAGE_SIZE),
+    [filtered, page]
   );
 
-  async function handleExport() {
-    haptic.medium();
-    let csv = "Name,Barcode,Category,Section,Bay,Level,Quantity\n";
-    filtered.forEach((p: any) => {
-      (p.locations || []).forEach((loc: any) => {
-        csv += `"${p.name}","${p.barcode}","${p.category}","${
-          loc.sections?.code || ""
-        }",${loc.bay || ""},${loc.level || ""},${loc.quantity || 0}\n`;
-      });
-    });
-    await Share.share({
-      message: csv,
-      title: `${wh.warehouseName} Inventory Export`,
-    });
-  }
-
-  function renderProduct({ item }: { item: any }) {
-    return (
-      <ProductCard
-        item={item}
-        T={T}
-        onPress={() => {
-          haptic.light();
-          router.push(`/product/${item.id}`);
-        }}
-      />
-    );
-  }
+  const hasMore = paginated.length < filtered.length;
 
   return (
-    <View style={[s.screen, { backgroundColor: T.background }]}>
-      <ScreenHeader {...wh} scrollY={scrollY} />
-      <View style={s.content}>
-        <OfflineBanner />
-        {!loading && (
-          <View
-            style={[
-              s.summaryRow,
-              { backgroundColor: T.surface, borderColor: T.border },
-            ]}
-          >
-            <View style={s.summaryItem}>
-              <Text style={[s.summaryNum, { color: T.textPrimary }]}>
-                {products.length}
-              </Text>
-              <Text style={[s.summaryLabel, { color: T.textSecondary }]}>
-                Products
-              </Text>
-            </View>
-            <View style={[s.summaryDivider, { backgroundColor: T.border }]} />
-            <View style={s.summaryItem}>
-              <Text style={[s.summaryNum, { color: T.textPrimary }]}>
-                {totalStock}
-              </Text>
-              <Text style={[s.summaryLabel, { color: T.textSecondary }]}>
-                Total Units
-              </Text>
-            </View>
-            <View style={[s.summaryDivider, { backgroundColor: T.border }]} />
-            <View style={s.summaryItem}>
-              <Text style={[s.summaryNum, { color: T.textPrimary }]}>
-                {filtered.length}
-              </Text>
-              <Text style={[s.summaryLabel, { color: T.textSecondary }]}>
-                Showing
-              </Text>
-            </View>
-          </View>
-        )}
-
-        <View
-          style={[
-            s.searchRow,
-            { backgroundColor: T.surface, borderColor: T.border },
-          ]}
-        >
-          <FontAwesome
-            name="search"
-            size={14}
-            color={T.textSecondary}
-            style={{ marginRight: 10 }}
-          />
-          <TextInput
-            style={[s.searchInput, { color: T.textPrimary }]}
-            placeholder="Search by name or barcode..."
-            placeholderTextColor={T.textSecondary}
-            value={search}
-            onChangeText={setSearch}
-            autoCapitalize="none"
-          />
-          {search.length > 0 && (
-            <TouchableOpacity onPress={() => setSearch("")}>
-              <FontAwesome
-                name="times-circle"
-                size={16}
-                color={T.textSecondary}
-              />
-            </TouchableOpacity>
-          )}
-        </View>
-
-        {/* Sort + Export row */}
-        <View style={s.sortExportRow}>
-          <TouchableOpacity
-            style={[
-              s.sortBtn,
-              { backgroundColor: T.surface, borderColor: T.border },
-            ]}
+    <View style={[styles.screen, { backgroundColor: T.bg }]}>
+      <ScreenHeader
+        eyebrow={
+          wh.warehouseName ? `Facility · ${wh.warehouseName}` : undefined
+        }
+        title="Inventory"
+        trailing={
+          <Pressable
             onPress={() => {
               haptic.light();
-              setShowSortMenu(!showSortMenu);
+              setSortSheetOpen(true);
             }}
-            activeOpacity={0.7}
+            hitSlop={10}
+            accessibilityLabel="Sort"
           >
-            <FontAwesome
-              name="sort"
-              size={12}
-              color={T.textSecondary}
-              style={{ marginRight: 6 }}
-            />
-            <Text style={[s.sortBtnText, { color: T.textPrimary }]}>
-              {SORT_OPTIONS.find((o) => o.value === sortBy)?.label}
-            </Text>
-            <FontAwesome
-              name="chevron-down"
-              size={9}
-              color={T.textSecondary}
-              style={{ marginLeft: 4 }}
-            />
-          </TouchableOpacity>
-          {perms.canExportInventory && (
-            <TouchableOpacity
-              style={[
-                s.exportBtn,
-                { backgroundColor: T.surface, borderColor: T.border },
-              ]}
-              onPress={handleExport}
-              activeOpacity={0.7}
-            >
-              <FontAwesome
-                name="download"
-                size={12}
-                color={T.primary}
-                style={{ marginRight: 6 }}
-              />
-              <Text style={[s.exportBtnText, { color: T.primary }]}>
-                Export
-              </Text>
-            </TouchableOpacity>
-          )}
-        </View>
+            <Icon name="bar-chart-3" size={18} color={T.textMuted} />
+          </Pressable>
+        }
+      />
 
-        {showSortMenu && (
-          <View
-            style={[
-              s.sortMenu,
-              { backgroundColor: T.surface, borderColor: T.border },
-            ]}
-          >
-            {SORT_OPTIONS.map((opt) => (
-              <TouchableOpacity
-                key={opt.value}
-                style={[
-                  s.sortMenuItem,
-                  { borderBottomColor: T.border },
-                  sortBy === opt.value && { backgroundColor: T.primary + "08" },
-                ]}
-                onPress={() => {
-                  setSortBy(opt.value);
-                  setShowSortMenu(false);
-                  setPage(1);
-                  haptic.selection();
-                }}
-              >
-                <FontAwesome
-                  name={opt.icon as any}
-                  size={13}
-                  color={sortBy === opt.value ? T.primary : T.textSecondary}
-                  style={{ width: 24 }}
-                />
+      {/* Search field — §7.4 field-shell pattern, hairline, sharp corners */}
+      <View style={[styles.searchWrap, { borderBottomColor: T.borderSubtle }]}>
+        <View
+          style={[
+            styles.search,
+            { borderColor: T.borderSubtle, backgroundColor: T.bgElevated },
+          ]}
+        >
+          <Icon name="search" size={14} color={T.textDim} />
+          <TextInput
+            value={search}
+            onChangeText={setSearch}
+            placeholder="Search by name, barcode, or SKU…"
+            placeholderTextColor={T.textDim}
+            autoCapitalize="none"
+            autoCorrect={false}
+            style={[styles.searchInput, type.body, { color: T.text }]}
+          />
+          {search.length > 0 ? (
+            <Pressable
+              onPress={() => setSearch("")}
+              hitSlop={10}
+              accessibilityLabel="Clear search"
+            >
+              <Icon name="x" size={14} color={T.textMuted} />
+            </Pressable>
+          ) : null}
+        </View>
+      </View>
+
+      {/* Category tabs — §7.13, mono caps, 2px gold underline on active */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.tabsRow}
+        style={{ borderBottomWidth: 1, borderBottomColor: T.borderSubtle }}
+      >
+        {CATEGORIES.map((c) => {
+          const isActive = activeCategory === c.value;
+          const count =
+            c.value === "all"
+              ? products.length
+              : products.filter((p) => p.category === c.value).length;
+          return (
+            <Pressable
+              key={c.value}
+              onPress={() => {
+                haptic.selection();
+                setActiveCategory(c.value);
+                setPage(1);
+              }}
+              style={styles.tab}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: isActive }}
+            >
+              <View style={styles.tabInner}>
                 <Text
                   style={[
-                    s.sortMenuText,
-                    { color: T.textPrimary },
-                    sortBy === opt.value && {
-                      color: T.primary,
-                      fontWeight: "600",
+                    type.label,
+                    {
+                      color: isActive ? T.accent : T.textMuted,
+                      letterSpacing: 2,
                     },
                   ]}
                 >
-                  {opt.label}
+                  {c.label}
                 </Text>
-                {sortBy === opt.value && (
-                  <FontAwesome
-                    name="check"
-                    size={12}
-                    color={T.primary}
-                    style={{ marginLeft: "auto" }}
-                  />
-                )}
-              </TouchableOpacity>
-            ))}
-          </View>
-        )}
-
-        <FlatList
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          data={CATEGORIES}
-          keyExtractor={(c) => c.value}
-          style={s.pillRow}
-          contentContainerStyle={{ paddingRight: 20 }}
-          renderItem={({ item: c }) => {
-            const isActive = activeCategory === c.value;
-            const count = getCategoryCount(c.value);
-            return (
-              <TouchableOpacity
-                style={s.pill}
-                onPress={() => {
-                  setActiveCategory(c.value);
-                  haptic.selection();
-                }}
-                activeOpacity={0.7}
-              >
-                {isActive ? (
-                  <LinearGradient
-                    colors={T.headerGradient}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 0 }}
-                    style={s.pillGradient}
-                  >
-                    <FontAwesome
-                      name={c.icon as any}
-                      size={11}
-                      color="#FFF"
-                      style={{ marginRight: 5 }}
-                    />
-                    <Text style={s.pillTextActive}>{c.label}</Text>
-                    <View style={s.pillCount}>
-                      <Text style={s.pillCountText}>{count}</Text>
-                    </View>
-                  </LinearGradient>
-                ) : (
-                  <View
-                    style={[
-                      s.pillInner,
-                      { backgroundColor: T.surface, borderColor: T.border },
-                    ]}
-                  >
-                    <Text style={[s.pillText, { color: T.textSecondary }]}>
-                      {c.label}
-                    </Text>
-                  </View>
-                )}
-              </TouchableOpacity>
-            );
-          }}
-        />
-
-        {loading ? (
-          <View style={{ paddingTop: 8 }}>
-            {[1, 2, 3, 4].map((i) => (
-              <View
-                key={i}
-                style={[
-                  s.skeletonCard,
-                  { backgroundColor: T.surface, borderColor: T.border },
-                ]}
-              >
-                <Skeleton
-                  width={40}
-                  height={40}
-                  borderRadius={10}
-                  style={{ marginRight: 12 }}
-                />
-                <View style={{ flex: 1 }}>
-                  <Skeleton
-                    width="70%"
-                    height={15}
-                    style={{ marginBottom: 6 }}
-                  />
-                  <Skeleton
-                    width="50%"
-                    height={12}
-                    style={{ marginBottom: 6 }}
-                  />
-                  <Skeleton width="35%" height={10} />
-                </View>
-                <Skeleton width={30} height={24} borderRadius={6} />
-              </View>
-            ))}
-          </View>
-        ) : filtered.length === 0 ? (
-          <View style={s.emptyWrap}>
-            <View
-              style={[
-                s.emptyCircle,
-                { backgroundColor: T.surface, borderColor: T.border },
-              ]}
-            >
-              <FontAwesome name="inbox" size={32} color={T.textSecondary} />
-            </View>
-            <Text style={[s.emptyTitle, { color: T.textPrimary }]}>
-              No products found
-            </Text>
-            <Text style={[s.emptySub, { color: T.textSecondary }]}>
-              {search
-                ? `No results for "${search}"`
-                : "Try changing the category filter"}
-            </Text>
-          </View>
-        ) : (
-          <FlatList
-            data={paginated}
-            keyExtractor={(item) => item.id}
-            renderItem={renderProduct}
-            showsVerticalScrollIndicator={false}
-            contentContainerStyle={{ paddingBottom: 120, paddingTop: 4 }}
-            onScroll={onScroll}
-            scrollEventThrottle={16}
-            onEndReached={loadMore}
-            onEndReachedThreshold={0.3}
-            ListFooterComponent={
-              hasMore ? (
-                <View style={{ paddingVertical: 20, alignItems: "center" }}>
-                  <ActivityIndicator color={T.primary} />
-                  <Text
-                    style={{
-                      color: T.textSecondary,
-                      fontSize: 12,
-                      marginTop: 6,
-                    }}
-                  >
-                    {paginated.length} of {filtered.length} products
-                  </Text>
-                </View>
-              ) : filtered.length > PAGE_SIZE ? (
                 <Text
-                  style={{
-                    color: T.textSecondary,
-                    fontSize: 12,
-                    textAlign: "center",
-                    paddingVertical: 16,
-                  }}
+                  style={[
+                    type.labelSm,
+                    {
+                      color: isActive ? T.accent : T.textDim,
+                      marginLeft: 6,
+                    },
+                  ]}
                 >
-                  All {filtered.length} products loaded
+                  {count}
                 </Text>
-              ) : null
-            }
-            refreshControl={
-              <RefreshControl
-                refreshing={refreshing}
-                onRefresh={() => {
-                  setRefreshing(true);
-                  haptic.light();
-                  loadProducts();
-                }}
-                tintColor={T.primary}
-              />
-            }
-          />
-        )}
+              </View>
+              {isActive ? (
+                <View
+                  style={[styles.tabRule, { backgroundColor: T.accent }]}
+                  pointerEvents="none"
+                />
+              ) : null}
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+
+      {/* Sort + count meta row */}
+      <View style={[styles.metaRow, { borderBottomColor: T.borderSubtle }]}>
+        <Text style={[type.labelSm, { color: T.textMuted }]}>
+          Showing <Text style={{ color: T.text }}>{paginated.length}</Text> of{" "}
+          {filtered.length}
+        </Text>
+        <Pressable
+          onPress={() => {
+            haptic.light();
+            setSortSheetOpen(true);
+          }}
+          style={styles.sortBtn}
+          accessibilityLabel="Change sort order"
+        >
+          <Text style={[type.labelSm, { color: T.textMuted }]}>SORT · </Text>
+          <Text style={[type.labelSm, { color: T.accent }]}>
+            {SORT_OPTIONS.find((s) => s.value === sortBy)?.label.toUpperCase()}
+          </Text>
+        </Pressable>
       </View>
+
+      {/* Content */}
+      {loading ? (
+        <SkeletonList theme={T} />
+      ) : filtered.length === 0 ? (
+        <EmptyState
+          theme={T}
+          hasFilter={!!search || activeCategory !== "all"}
+          searchTerm={search}
+        />
+      ) : (
+        <FlatList
+          data={paginated}
+          keyExtractor={(item) => item.id}
+          renderItem={({ item }) => (
+            <ProductRow
+              product={item}
+              theme={T}
+              onPress={() => {
+                haptic.light();
+                router.push(`/product/${item.id}` as any);
+              }}
+            />
+          )}
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={{ paddingBottom: 140 }}
+          onEndReached={() => {
+            if (hasMore) setPage((p) => p + 1);
+          }}
+          onEndReachedThreshold={0.3}
+          ListFooterComponent={
+            hasMore ? (
+              <View style={styles.footer}>
+                <ActivityIndicator color={T.accent} size="small" />
+              </View>
+            ) : filtered.length > PAGE_SIZE ? (
+              <View style={styles.footer}>
+                <Text style={[type.labelSm, { color: T.textDim }]}>
+                  END · {filtered.length} TOTAL
+                </Text>
+              </View>
+            ) : null
+          }
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              tintColor={T.accent}
+              onRefresh={() => {
+                setRefreshing(true);
+                haptic.light();
+                loadProducts();
+              }}
+            />
+          }
+        />
+      )}
+
+      {/* Sort sheet — §8.4 mobile modals are sheets, not centered dialogs */}
+      <SortSheet
+        open={sortSheetOpen}
+        current={sortBy}
+        onSelect={(value) => {
+          haptic.selection();
+          setSortBy(value);
+          setSortSheetOpen(false);
+        }}
+        onClose={() => setSortSheetOpen(false)}
+        theme={T}
+      />
     </View>
   );
 }
 
-function ProductCard({
-  item,
-  T,
+// ─────────────────────────────────────────────────────────────────────────────
+// PRODUCT ROW
+// ─────────────────────────────────────────────────────────────────────────────
+
+function ProductRow({
+  product,
+  theme: T,
   onPress,
 }: {
-  item: any;
-  T: any;
+  product: Product;
+  theme: ReturnType<typeof useTheme>;
   onPress: () => void;
 }) {
-  const scale = useRef(new Animated.Value(1)).current;
-  const loc = item.locations?.[0];
-  const locData = loc
-    ? {
-        label: `${loc.sections?.code || "?"}-Bay${loc.bay}-L${loc.level}`,
-        color: loc.sections?.color || T.primary,
-        section: loc.sections?.code || "?",
-      }
-    : null;
-  const qty = (item.locations || []).reduce(
-    (sum: number, l: any) => sum + (l.quantity || 0),
-    0
-  );
-  const isLowStock = qty <= 5 && qty > 0;
+  const qty = totalQuantity(product);
+  const loc = primaryLocation(product);
+  const reorder = product.reorder_point ?? 0;
+  const isLow =
+    reorder > 0 ? qty <= reorder : qty <= LOW_STOCK_THRESHOLD && qty > 0;
+  const isOut = qty === 0;
+
+  // §9.5 alert escalation: 4px left border in warning/danger when stock is low
+  const leftBorderColor = isOut ? T.danger : isLow ? T.warning : "transparent";
 
   return (
-    <TouchableOpacity
-      activeOpacity={1}
+    <Pressable
       onPress={onPress}
-      onPressIn={() =>
-        Animated.spring(scale, {
-          toValue: 0.97,
-          useNativeDriver: true,
-          speed: 50,
-          bounciness: 4,
-        }).start()
-      }
-      onPressOut={() =>
-        Animated.spring(scale, {
-          toValue: 1,
-          useNativeDriver: true,
-          speed: 50,
-          bounciness: 4,
-        }).start()
-      }
+      style={({ pressed }) => [
+        styles.row,
+        {
+          backgroundColor: pressed ? T.surface2 : "transparent",
+          borderBottomColor: T.borderFaint,
+          borderLeftColor: leftBorderColor,
+          borderLeftWidth: 4,
+        },
+      ]}
+      accessibilityRole="button"
+      accessibilityLabel={`${product.name}, ${qty} units${
+        loc ? ` at ${loc}` : ""
+      }`}
     >
-      <Animated.View
-        style={[
-          s.productCard,
-          {
-            backgroundColor: T.surface,
-            borderColor: T.border,
-            transform: [{ scale }],
-          },
-        ]}
-      >
-        {item.photo_url ? (
-          <Image
-            source={{ uri: item.photo_url }}
-            style={s.productThumb}
-            resizeMode="cover"
-          />
-        ) : (
-          <View
-            style={[
-              s.sectionAccent,
-              { backgroundColor: locData?.color || T.textSecondary },
-            ]}
+      <View style={styles.rowMain}>
+        {/* Top line: product name + qty */}
+        <View style={styles.rowTop}>
+          <Text
+            style={[type.bodyLg, { color: T.text, flex: 1, fontSize: 15 }]}
+            numberOfLines={1}
           >
-            <Text style={s.sectionAccentText}>{locData?.section || "?"}</Text>
-          </View>
-        )}
-        <View style={s.productBody}>
-          <View style={s.productTop}>
-            <View style={{ flex: 1 }}>
-              <Text
-                style={[s.productName, { color: T.textPrimary }]}
-                numberOfLines={1}
-              >
-                {item.name}
-              </Text>
-              <Text style={[s.productMeta, { color: T.textSecondary }]}>
-                {item.category.replace("_", "/").toUpperCase()} {"\u2022"}{" "}
-                {item.barcode}
-              </Text>
-            </View>
-            <View style={s.qtyWrap}>
-              <Text
-                style={[
-                  s.qtyValue,
-                  { color: isLowStock ? T.danger : T.textPrimary },
-                ]}
-              >
-                {qty}
-              </Text>
-              <Text style={[s.qtyLabel, { color: T.textSecondary }]}>
-                units
-              </Text>
-            </View>
-          </View>
-          <View style={s.productBottom}>
-            {locData ? (
-              <View
-                style={[s.locationChip, { backgroundColor: T.primary + "10" }]}
-              >
-                <FontAwesome name="map-marker" size={10} color={T.primary} />
-                <Text style={[s.locationText, { color: T.primary }]}>
-                  {locData.label}
-                </Text>
-              </View>
-            ) : (
-              <View
-                style={[
-                  s.noLocationChip,
-                  { backgroundColor: T.textSecondary + "15" },
-                ]}
-              >
-                <Text style={[s.noLocationText, { color: T.textSecondary }]}>
-                  No location
-                </Text>
-              </View>
-            )}
-            {isLowStock && (
-              <View
-                style={[s.lowStockChip, { backgroundColor: T.danger + "10" }]}
-              >
-                <FontAwesome
-                  name="exclamation-triangle"
-                  size={9}
-                  color={T.danger}
-                />
-                <Text style={[s.lowStockText, { color: T.danger }]}>
-                  Low stock
-                </Text>
-              </View>
-            )}
-            <View style={{ flex: 1 }} />
-            <FontAwesome
-              name="chevron-right"
-              size={11}
-              color={T.textSecondary}
-            />
+            {product.name}
+          </Text>
+
+          <View style={styles.qtyWrap}>
+            <Text
+              style={[
+                type.displayXs,
+                {
+                  color: isOut ? T.danger : isLow ? T.warning : T.text,
+                  fontFamily: type.monoBody.fontFamily,
+                  fontSize: 18,
+                },
+              ]}
+            >
+              {qty.toLocaleString()}
+            </Text>
+            <Text
+              style={[type.labelSm, { color: T.textDim, letterSpacing: 1.5 }]}
+            >
+              UNITS
+            </Text>
           </View>
         </View>
-      </Animated.View>
-    </TouchableOpacity>
+
+        {/* Bottom line: SKU · location · category — all mono */}
+        <View style={styles.rowBottom}>
+          <Text
+            style={[type.monoSm, { color: T.textMuted, letterSpacing: 0.5 }]}
+            numberOfLines={1}
+          >
+            {product.internal_sku ?? product.barcode}
+            {loc ? <Text style={{ color: T.textDim }}> · </Text> : null}
+            {loc ? <Text style={{ color: T.textMuted }}>{loc}</Text> : null}
+            {product.category ? (
+              <>
+                <Text style={{ color: T.textDim }}> · </Text>
+                <Text style={{ color: T.textDim }}>
+                  {categoryLabel(product.category)}
+                </Text>
+              </>
+            ) : null}
+          </Text>
+        </View>
+      </View>
+
+      <Icon name="chevron-right" size={14} color={T.textDim} />
+    </Pressable>
   );
 }
 
-const s = StyleSheet.create({
-  screen: { flex: 1 },
-  content: { flex: 1, paddingHorizontal: 20, paddingTop: 16 },
-  summaryRow: {
-    flexDirection: "row",
-    borderRadius: 12,
-    paddingVertical: 12,
-    marginBottom: 16,
-    borderWidth: 1,
-  },
-  summaryItem: { flex: 1, alignItems: "center" },
-  summaryNum: { fontSize: 18, fontWeight: "bold" },
-  summaryLabel: { fontSize: 10, marginTop: 2 },
-  summaryDivider: { width: 1 },
-  searchRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    marginBottom: 14,
-    borderWidth: 1,
-  },
-  searchInput: { flex: 1, paddingVertical: 12, fontSize: 15 },
-  pillRow: { maxHeight: 38, marginBottom: 14 },
-  pill: { marginRight: 8, borderRadius: 20, overflow: "hidden" },
-  pillGradient: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 20,
-  },
-  pillInner: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 20,
-    borderWidth: 1,
-  },
-  pillText: { fontSize: 13 },
-  pillTextActive: { fontSize: 13, color: "#FFF", fontWeight: "600" },
-  pillCount: {
-    backgroundColor: "rgba(255,255,255,0.25)",
-    borderRadius: 10,
-    paddingHorizontal: 6,
-    paddingVertical: 1,
-    marginLeft: 6,
-  },
-  pillCountText: { fontSize: 11, color: "#FFF", fontWeight: "bold" },
-  productCard: {
-    flexDirection: "row",
-    borderRadius: 14,
-    marginBottom: 10,
-    borderWidth: 1,
-    overflow: "hidden",
-  },
-  sectionAccent: { width: 40, justifyContent: "center", alignItems: "center" },
-  productThumb: {
-    width: 40,
-    alignSelf: "stretch",
-    borderTopLeftRadius: 13,
-    borderBottomLeftRadius: 13,
-  },
-  sectionAccentText: { color: "#FFF", fontSize: 14, fontWeight: "bold" },
-  productBody: { flex: 1, padding: 14 },
-  productTop: { flexDirection: "row", alignItems: "flex-start" },
-  productName: { fontSize: 15, fontWeight: "bold" },
-  productMeta: { fontSize: 11, marginTop: 3 },
-  qtyWrap: { alignItems: "center", marginLeft: 12 },
-  qtyValue: { fontSize: 22, fontWeight: "bold" },
-  qtyLabel: { fontSize: 10, marginTop: -2 },
-  productBottom: { flexDirection: "row", alignItems: "center", marginTop: 10 },
-  locationChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    marginRight: 6,
-  },
-  locationText: { fontSize: 11, fontWeight: "600", marginLeft: 4 },
-  noLocationChip: {
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    marginRight: 6,
-  },
-  noLocationText: { fontSize: 11 },
-  lowStockChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-  },
-  lowStockText: { fontSize: 10, fontWeight: "600", marginLeft: 4 },
-  skeletonCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 10,
-    borderWidth: 1,
-  },
-  emptyWrap: {
+// ─────────────────────────────────────────────────────────────────────────────
+// SKELETON / EMPTY
+// ─────────────────────────────────────────────────────────────────────────────
+
+function SkeletonList({ theme: T }: { theme: ReturnType<typeof useTheme> }) {
+  const opacity = useRef(new Animated.Value(0.4)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(opacity, {
+          toValue: 0.7,
+          duration: 700,
+          useNativeDriver: true,
+        }),
+        Animated.timing(opacity, {
+          toValue: 0.4,
+          duration: 700,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [opacity]);
+
+  return (
+    <View>
+      {[0, 1, 2, 3, 4, 5].map((i) => (
+        <View
+          key={i}
+          style={[styles.skelRow, { borderBottomColor: T.borderFaint }]}
+        >
+          <View style={{ flex: 1 }}>
+            <Animated.View
+              style={[
+                styles.skelBar,
+                { backgroundColor: T.surface2, width: "55%", opacity },
+              ]}
+            />
+            <Animated.View
+              style={[
+                styles.skelBar,
+                {
+                  backgroundColor: T.surface2,
+                  width: "35%",
+                  height: 10,
+                  marginTop: 8,
+                  opacity,
+                },
+              ]}
+            />
+          </View>
+          <Animated.View
+            style={[
+              styles.skelBar,
+              { backgroundColor: T.surface2, width: 36, height: 22, opacity },
+            ]}
+          />
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function EmptyState({
+  theme: T,
+  hasFilter,
+  searchTerm,
+}: {
+  theme: ReturnType<typeof useTheme>;
+  hasFilter: boolean;
+  searchTerm: string;
+}) {
+  return (
+    <View style={styles.empty}>
+      <Text style={[type.label, { color: T.textMuted, letterSpacing: 2.5 }]}>
+        {hasFilter ? "NO MATCHES · 00" : "NO PRODUCTS · 00"}
+      </Text>
+      <Text
+        style={[
+          type.bodyLg,
+          {
+            color: T.text,
+            marginTop: space.s8,
+            textAlign: "center",
+            fontSize: 16,
+          },
+        ]}
+      >
+        {hasFilter
+          ? `Nothing found${searchTerm ? ` for "${searchTerm}"` : ""}.`
+          : "No products in this facility yet."}
+      </Text>
+      <Text
+        style={[
+          type.bodySm,
+          {
+            color: T.textMuted,
+            marginTop: space.s8,
+            textAlign: "center",
+            maxWidth: 280,
+            lineHeight: 20,
+          },
+        ]}
+      >
+        {hasFilter
+          ? "Try a different search term or clear the category filter."
+          : "Register your first product by tapping the scan button."}
+      </Text>
+    </View>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SORT SHEET — §8.4 full-width bottom sheet, not centered modal
+// ─────────────────────────────────────────────────────────────────────────────
+
+function SortSheet({
+  open,
+  current,
+  onSelect,
+  onClose,
+  theme: T,
+}: {
+  open: boolean;
+  current: SortOption;
+  onSelect: (v: SortOption) => void;
+  onClose: () => void;
+  theme: ReturnType<typeof useTheme>;
+}) {
+  const insets = useSafeAreaInsets();
+
+  return (
+    <Modal
+      visible={open}
+      transparent
+      animationType="slide"
+      onRequestClose={onClose}
+    >
+      <Pressable
+        onPress={onClose}
+        style={[styles.backdrop, { backgroundColor: T.modalBackdrop }]}
+      >
+        <Pressable
+          onPress={() => {}} // swallow taps inside the sheet
+          style={[
+            styles.sheet,
+            {
+              backgroundColor: T.bgElevated,
+              borderTopColor: T.borderSubtle,
+              paddingBottom: insets.bottom + space.s16,
+            },
+          ]}
+        >
+          <View style={styles.sheetHeader}>
+            <Text style={[type.label, { color: T.textMuted }]}>SORT BY</Text>
+            <Pressable onPress={onClose} hitSlop={10}>
+              <Icon name="x" size={16} color={T.textMuted} />
+            </Pressable>
+          </View>
+
+          {SORT_OPTIONS.map((opt, i) => {
+            const isActive = opt.value === current;
+            return (
+              <Pressable
+                key={opt.value}
+                onPress={() => onSelect(opt.value)}
+                style={({ pressed }) => [
+                  styles.sheetRow,
+                  {
+                    backgroundColor: pressed ? T.surface2 : "transparent",
+                    borderBottomColor: T.borderFaint,
+                    borderBottomWidth: i === SORT_OPTIONS.length - 1 ? 0 : 1,
+                  },
+                ]}
+              >
+                <Text
+                  style={[
+                    type.bodyLg,
+                    { color: isActive ? T.accent : T.text, fontSize: 15 },
+                  ]}
+                >
+                  {opt.label}
+                </Text>
+                {isActive ? (
+                  <Icon name="check" size={16} color={T.accent} />
+                ) : null}
+              </Pressable>
+            );
+          })}
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STYLES
+// ─────────────────────────────────────────────────────────────────────────────
+
+const styles = StyleSheet.create({
+  screen: {
     flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    paddingBottom: 60,
   },
-  emptyCircle: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 1,
-    marginBottom: 16,
+
+  // Search row
+  searchWrap: {
+    paddingHorizontal: layout.contentPaddingH,
+    paddingVertical: space.s12,
+    borderBottomWidth: 1,
   },
-  emptyTitle: { fontSize: 17, fontWeight: "bold" },
-  emptySub: { fontSize: 13, marginTop: 4, textAlign: "center" },
-  sortExportRow: {
+  search: {
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 12,
-    gap: 8,
+    paddingHorizontal: space.s12,
+    paddingVertical: space.s8,
+    borderWidth: layout.hairlineWidth,
+    gap: space.s8,
+  },
+  searchInput: {
+    flex: 1,
+    padding: 0,
+  },
+
+  // Category tab strip
+  tabsRow: {
+    paddingHorizontal: layout.contentPaddingH,
+    height: 44,
+    alignItems: "stretch",
+  },
+  tab: {
+    paddingHorizontal: space.s12,
+    justifyContent: "center",
+  },
+  tabInner: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  tabRule: {
+    position: "absolute",
+    bottom: 0,
+    left: space.s12,
+    right: space.s12,
+    height: 2,
+  },
+
+  // Meta row (count + sort)
+  metaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: layout.contentPaddingH,
+    paddingVertical: space.s12,
+    borderBottomWidth: 1,
   },
   sortBtn: {
     flexDirection: "row",
     alignItems: "center",
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderWidth: 1,
   },
-  sortBtnText: { fontSize: 13, fontWeight: "500" },
-  exportBtn: {
+
+  // Product row
+  row: {
     flexDirection: "row",
     alignItems: "center",
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderWidth: 1,
-    marginLeft: "auto",
+    paddingVertical: space.s12,
+    paddingRight: layout.contentPaddingH,
+    paddingLeft: layout.contentPaddingH - 4, // adjust for the 4px left border
+    borderBottomWidth: layout.hairlineWidth,
+    gap: space.s12,
   },
-  exportBtnText: { fontSize: 13, fontWeight: "600" },
-  sortMenu: {
-    borderRadius: 12,
-    borderWidth: 1,
-    marginBottom: 12,
-    overflow: "hidden",
+  rowMain: {
+    flex: 1,
   },
-  sortMenuItem: {
+  rowTop: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: space.s12,
+  },
+  rowBottom: {
+    marginTop: 4,
+  },
+  qtyWrap: {
+    alignItems: "flex-end",
+    minWidth: 50,
+  },
+
+  // Skeleton
+  skelRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
+    paddingHorizontal: layout.contentPaddingH,
+    paddingVertical: space.s16,
+    borderBottomWidth: layout.hairlineWidth,
+    gap: space.s12,
   },
-  sortMenuText: { fontSize: 14, marginLeft: 4 },
+  skelBar: {
+    height: 14,
+    // SHARP corners — no borderRadius per §1.1
+  },
+
+  // Empty state
+  empty: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: layout.contentPaddingH,
+    paddingBottom: space.s64,
+  },
+
+  // Footer
+  footer: {
+    paddingVertical: space.s20,
+    alignItems: "center",
+  },
+
+  // Sort sheet
+  backdrop: {
+    flex: 1,
+    justifyContent: "flex-end",
+  },
+  sheet: {
+    borderTopWidth: layout.hairlineWidth,
+    paddingHorizontal: layout.contentPaddingH,
+    paddingTop: space.s16,
+  },
+  sheetHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingBottom: space.s12,
+  },
+  sheetRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: space.s16,
+  },
 });

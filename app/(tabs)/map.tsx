@@ -1,681 +1,799 @@
-import FontAwesome from "@expo/vector-icons/FontAwesome";
-import { LinearGradient } from "expo-linear-gradient";
+/**
+ * Map — Nimbus rebuild against the floor_* schema.
+ *
+ * Drop-in replacement for app/(tabs)/map.tsx. Reads facility geometry
+ * straight from the columns the desktop builder writes:
+ *   - warehouses.floor_canvas_width / floor_canvas_height / floor_unit
+ *   - sections.floor_x / floor_y / floor_width / floor_height / rotation
+ *
+ * No more position_json parsing, no more 90° rotation hack. The same
+ * coordinates the desktop persists render here. (position_json is still
+ * in the schema — keeping it around as a safety net during transition.
+ * Once desktop write paths are confirmed against floor_*, drop it.)
+ *
+ * Tap a section → bottom sheet with the section's bay × level layout, the
+ * product/stock summary aggregated from locations, and a placeholder for
+ * a future bay-detail drill-down.
+ *
+ * Per §9.4 "Route/path display": top-down (no rotation by default —
+ * sections rotate individually if their `rotation` column says so),
+ * 1px hairline rack rectangles with the section's stored color as both
+ * fill (15% opacity) and stroke. Section labels are mono caps.
+ *
+ * Per §8.4 mobile rules: the bottom sheet is a full-width slide-up,
+ * not a centered modal.
+ *
+ * NOT yet implemented (TODO for follow-up):
+ *   - Pinch-to-zoom + pan. Current view fits the canvas to the
+ *     available width. Add gesture-handler + reanimated when needed.
+ *   - Bay-level drill-down screen. Tapping "View bays" is currently a
+ *     no-op with a TODO marker.
+ */
+
 import { useFocusEffect, useRouter } from "expo-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  Animated,
-  Dimensions,
   Modal,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
+  useWindowDimensions,
 } from "react-native";
-import { ScreenHeader, useHeaderScroll } from "../../lib/Header";
-import { THEME } from "../../lib/config";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import Svg, { G, Rect, Text as SvgText } from "react-native-svg";
+
+import { ScreenHeader } from "../../lib/nimbus/Header";
+import { Icon } from "../../lib/nimbus/Icon";
+import { layout, space, type } from "../../lib/nimbus/tokens";
 import { supabase } from "../../lib/supabase";
 import { useTheme } from "../../lib/theme";
-import { Skeleton, haptic } from "../../lib/ui";
+import { haptic } from "../../lib/ui";
 import { useWarehouse } from "../../lib/warehouse";
 
-const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get("window");
+// ─────────────────────────────────────────────────────────────────────────────
+// TYPES
+// ─────────────────────────────────────────────────────────────────────────────
 
-function SectionBlock({
-  section,
-  onPress,
-  size,
-}: {
-  section: any;
-  onPress: () => void;
-  size: number;
-}) {
-  const scale = useRef(new Animated.Value(1)).current;
-  return (
-    <TouchableOpacity
-      activeOpacity={1}
-      onPress={() => {
-        haptic.medium();
-        Animated.sequence([
-          Animated.timing(scale, {
-            toValue: 0.93,
-            duration: 80,
-            useNativeDriver: true,
-          }),
-          Animated.spring(scale, {
-            toValue: 1,
-            useNativeDriver: true,
-            speed: 20,
-            bounciness: 10,
-          }),
-        ]).start();
-        onPress();
-      }}
-    >
-      <Animated.View
-        style={[
-          s.block,
-          {
-            backgroundColor: section.color || THEME.primary,
-            width: size,
-            height: size,
-            transform: [{ scale }],
-          },
-        ]}
-      >
-        <Text style={s.blockCode}>{section.code}</Text>
-        <Text style={s.blockName} numberOfLines={1}>
-          {section.name}
-        </Text>
-        <Text style={s.blockMeta}>
-          {section.total_bays}B {"\u00D7"} {section.total_levels}L
-        </Text>
-      </Animated.View>
-    </TouchableOpacity>
-  );
+interface WarehouseRow {
+  id: string;
+  name: string;
+  floor_canvas_width: number;
+  floor_canvas_height: number;
+  floor_unit: string;
 }
 
-export default function MapScreen() {
-  const wh = useWarehouse();
-  const router = useRouter();
-  const T = useTheme();
-  const [sections, setSections] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [selectedSection, setSelectedSection] = useState<any>(null);
-  const [bayProducts, setBayProducts] = useState<any[]>([]);
-  const [bayLoading, setBayLoading] = useState(false);
+interface SectionRow {
+  id: string;
+  code: string;
+  name: string;
+  color: string | null;
+  floor_x: number;
+  floor_y: number;
+  floor_width: number;
+  floor_height: number;
+  rotation: number;
+  total_bays: number;
+  total_levels: number;
+}
 
-  const { scrollY, onScroll } = useHeaderScroll();
+interface SectionStats {
+  distinct_products: number;
+  total_stock: number;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SCREEN
+// ─────────────────────────────────────────────────────────────────────────────
+
+export default function MapScreen() {
+  const T = useTheme();
+  const router = useRouter();
+  const { warehouseId, warehouseName } = useWarehouse();
+
+  const [warehouse, setWarehouse] = useState<WarehouseRow | null>(null);
+  const [sections, setSections] = useState<SectionRow[]>([]);
+  const [stats, setStats] = useState<Map<string, SectionStats>>(new Map());
+  const [loading, setLoading] = useState(true);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    if (!warehouseId) return;
+    setLoading(true);
+
+    const [wh, secs, locs] = await Promise.all([
+      supabase
+        .from("warehouses")
+        .select("id, name, floor_canvas_width, floor_canvas_height, floor_unit")
+        .eq("id", warehouseId)
+        .maybeSingle(),
+      supabase
+        .from("sections")
+        .select(
+          "id, code, name, color, floor_x, floor_y, floor_width, floor_height, rotation, total_bays, total_levels"
+        )
+        .eq("warehouse_id", warehouseId)
+        .order("sort_order"),
+      supabase
+        .from("locations")
+        .select("section_id, product_id, quantity")
+        .eq("warehouse_id", warehouseId)
+        .eq("is_active", true),
+    ]);
+
+    if (wh.data) setWarehouse(wh.data as WarehouseRow);
+    if (secs.data) setSections(secs.data as SectionRow[]);
+
+    // Build per-section stats map from the locations rows
+    const s = new Map<string, SectionStats>();
+    if (locs.data) {
+      const seenPerSection = new Map<string, Set<string>>();
+      for (const row of locs.data as Array<{
+        section_id: string | null;
+        product_id: string | null;
+        quantity: number | null;
+      }>) {
+        if (!row.section_id) continue;
+        const prev = s.get(row.section_id) ?? {
+          distinct_products: 0,
+          total_stock: 0,
+        };
+        prev.total_stock += row.quantity ?? 0;
+        if (row.product_id) {
+          const seen = seenPerSection.get(row.section_id) ?? new Set();
+          seen.add(row.product_id);
+          seenPerSection.set(row.section_id, seen);
+          prev.distinct_products = seen.size;
+        }
+        s.set(row.section_id, prev);
+      }
+    }
+    setStats(s);
+
+    setLoading(false);
+  }, [warehouseId]);
 
   useFocusEffect(
     useCallback(() => {
-      if (wh.warehouseId) loadSections();
-    }, [wh.warehouseId])
+      load();
+    }, [load])
   );
 
-  useEffect(() => {
-    if (wh.warehouseId) loadSections();
-  }, [wh.warehouseId]);
-
-  async function loadSections() {
-    if (!wh.warehouseId) return;
-    setLoading(true);
-    const { data } = await supabase
-      .from("sections")
-      .select("*")
-      .eq("warehouse_id", wh.warehouseId)
-      .order("code");
-    setSections(data || []);
-    setLoading(false);
-  }
-
-  async function openBayView(section: any) {
-    setSelectedSection(section);
-    setBayLoading(true);
-    const { data } = await supabase
-      .from("locations")
-      .select("*, products(id, name, barcode, category)")
-      .eq("section_id", section.id)
-      .eq("warehouse_id", wh.warehouseId)
-      .order("bay")
-      .order("level");
-    setBayProducts(data || []);
-    setBayLoading(false);
-  }
-
-  function closeBayView() {
-    setSelectedSection(null);
-    setBayProducts([]);
-  }
-
-  const topRow = sections.filter((_, i) => i % 2 === 0);
-  const bottomRow = sections.filter((_, i) => i % 2 === 1);
-
-  const headerHeight = 130;
-  const availableH = SCREEN_H - headerHeight - 180;
-  const rotatedW = availableH;
-  const rotatedH = SCREEN_W;
-  const maxSections = Math.max(topRow.length, bottomRow.length);
-  const gap = 8;
-  const aisleW = 36;
-  const padding = 16;
-  const blockSize =
-    maxSections > 0
-      ? Math.min(
-          Math.floor((rotatedH - aisleW - padding * 2 - gap) / 2),
-          Math.floor(
-            (rotatedW - padding * 2 - (maxSections - 1) * gap - 80) /
-              maxSections
-          )
-        )
-      : 0;
+  const selected = useMemo(
+    () => sections.find((s) => s.id === selectedId) ?? null,
+    [sections, selectedId]
+  );
 
   return (
-    <View style={[s.screen, { backgroundColor: T.background }]}>
-      <ScreenHeader {...wh} scrollY={scrollY} />
-      <View style={s.content}>
-        <View style={s.titleRow}>
-          <Text style={[s.title, { color: T.textPrimary }]}>Floor Plan</Text>
-          <Text style={[s.subtitle, { color: T.textSecondary }]}>
-            {sections.length} sections
-            {sections.length > 0 ? " \u2022 Tilt phone to view" : ""}
+    <View style={[styles.screen, { backgroundColor: T.bg }]}>
+      <ScreenHeader
+        eyebrow={warehouseName ? `Facility · ${warehouseName}` : undefined}
+        title="Map"
+        leading={
+          <Pressable
+            onPress={() => router.back()}
+            hitSlop={10}
+            accessibilityLabel="Back"
+          >
+            <Icon name="arrow-left" size={18} color={T.text} />
+          </Pressable>
+        }
+      />
+
+      {loading || !warehouse ? (
+        <View style={styles.center}>
+          <ActivityIndicator color={T.accent} size="small" />
+        </View>
+      ) : sections.length === 0 ? (
+        <View style={styles.center}>
+          <Text style={[type.label, { color: T.textMuted, letterSpacing: 2 }]}>
+            NO SECTIONS · 00
+          </Text>
+          <Text
+            style={[
+              type.bodyLg,
+              {
+                color: T.text,
+                marginTop: space.s8,
+                textAlign: "center",
+                fontSize: 16,
+              },
+            ]}
+          >
+            No layout for this facility yet
+          </Text>
+          <Text
+            style={[
+              type.bodySm,
+              {
+                color: T.textMuted,
+                marginTop: space.s8,
+                textAlign: "center",
+                maxWidth: 280,
+                lineHeight: 20,
+              },
+            ]}
+          >
+            Use the facility builder on the desktop dashboard to lay out
+            sections.
           </Text>
         </View>
+      ) : (
+        <FloorView
+          warehouse={warehouse}
+          sections={sections}
+          stats={stats}
+          onSelectSection={(id) => {
+            haptic.light();
+            setSelectedId(id);
+          }}
+          theme={T}
+        />
+      )}
 
-        {loading ? (
-          <View style={s.mapArea}>
-            <View style={s.skeletonRow}>
-              {[1, 2, 3].map((i) => (
-                <Skeleton
-                  key={i}
-                  width={120}
-                  height={90}
-                  borderRadius={12}
-                  style={{ marginRight: 10 }}
-                />
-              ))}
-            </View>
-            <View style={{ height: 30 }} />
-            <View style={s.skeletonRow}>
-              {[1, 2, 3].map((i) => (
-                <Skeleton
-                  key={i}
-                  width={120}
-                  height={90}
-                  borderRadius={12}
-                  style={{ marginRight: 10 }}
-                />
-              ))}
-            </View>
-          </View>
-        ) : sections.length === 0 ? (
-          <View style={s.emptyState}>
-            <View
-              style={[
-                s.emptyCircle,
-                { backgroundColor: T.surface, borderColor: T.border },
-              ]}
-            >
-              <FontAwesome name="map-o" size={28} color={T.textSecondary} />
-            </View>
-            <Text style={[s.emptyTitle, { color: T.textPrimary }]}>
-              No sections yet
-            </Text>
-            <Text style={[s.emptySub, { color: T.textSecondary }]}>
-              Add sections to this warehouse to see the floor plan
-            </Text>
-          </View>
-        ) : (
-          <View style={s.mapArea}>
-            <View
-              style={[
-                s.rotatedContainer,
-                {
-                  width: rotatedW,
-                  height: rotatedH,
-                  transform: [{ rotate: "90deg" }],
-                },
-              ]}
-            >
-              <View style={s.landmark}>
-                <View
-                  style={[
-                    s.landmarkIcon,
-                    { backgroundColor: T.surface, borderColor: T.border },
-                  ]}
-                >
-                  <FontAwesome name="truck" size={14} color={T.textSecondary} />
-                </View>
-                <Text style={[s.landmarkText, { color: T.textSecondary }]}>
-                  DOCK
-                </Text>
-              </View>
-              <View style={s.gridArea}>
-                <View style={s.col}>
-                  {topRow.map((sec) => (
-                    <SectionBlock
-                      key={sec.id}
-                      section={sec}
-                      onPress={() => openBayView(sec)}
-                      size={blockSize}
-                    />
-                  ))}
-                </View>
-                <View style={s.aisle}>
-                  <View
-                    style={[
-                      s.aisleLine,
-                      {
-                        borderColor:
-                          T.mode === "dark" ? "rgba(255,255,255,0.1)" : "#CCC",
-                      },
-                    ]}
-                  />
-                  <Text style={[s.aisleLabel, { color: T.textSecondary }]}>
-                    AISLE
-                  </Text>
-                  <View
-                    style={[
-                      s.aisleLine,
-                      {
-                        borderColor:
-                          T.mode === "dark" ? "rgba(255,255,255,0.1)" : "#CCC",
-                      },
-                    ]}
-                  />
-                </View>
-                <View style={s.col}>
-                  {bottomRow.map((sec) => (
-                    <SectionBlock
-                      key={sec.id}
-                      section={sec}
-                      onPress={() => openBayView(sec)}
-                      size={blockSize}
-                    />
-                  ))}
-                </View>
-              </View>
-              <View style={s.landmark}>
-                <View
-                  style={[
-                    s.landmarkIcon,
-                    { backgroundColor: T.surface, borderColor: T.border },
-                  ]}
-                >
-                  <FontAwesome
-                    name="sign-in"
-                    size={14}
-                    color={T.textSecondary}
-                  />
-                </View>
-                <Text style={[s.landmarkText, { color: T.textSecondary }]}>
-                  ENTRY
-                </Text>
-              </View>
-            </View>
-          </View>
-        )}
-
-        {sections.length > 0 && (
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            style={s.legendScroll}
-            contentContainerStyle={{ paddingHorizontal: 20 }}
-          >
-            {sections.map((sec) => (
-              <TouchableOpacity
-                key={sec.id}
-                style={[
-                  s.legendChip,
-                  { backgroundColor: T.surface, borderColor: T.border },
-                ]}
-                activeOpacity={0.7}
-                onPress={() => {
-                  haptic.light();
-                  openBayView(sec);
-                }}
-              >
-                <View style={[s.legendDot, { backgroundColor: sec.color }]} />
-                <Text style={[s.legendCode, { color: T.textPrimary }]}>
-                  {sec.code}
-                </Text>
-                <Text style={[s.legendName, { color: T.textSecondary }]}>
-                  {sec.name}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-        )}
-      </View>
-
-      {/* Bay View Modal */}
-      <Modal visible={!!selectedSection} animationType="slide">
-        <View style={[s.bayScreen, { backgroundColor: T.background }]}>
-          <LinearGradient
-            colors={[selectedSection?.color || T.primary, T.secondary]}
-            start={{ x: 0.5, y: 0 }}
-            end={{ x: 0.5, y: 1 }}
-            style={s.bayHeader}
-          >
-            <TouchableOpacity onPress={closeBayView} style={s.bayBack}>
-              <FontAwesome name="arrow-left" size={18} color="#FFF" />
-            </TouchableOpacity>
-            <View style={{ flex: 1 }}>
-              <Text style={s.bayHeaderSub}>
-                Section {selectedSection?.code}
-              </Text>
-              <Text style={s.bayHeaderTitle}>{selectedSection?.name}</Text>
-            </View>
-            <View style={s.bayStatBox}>
-              <Text style={s.bayStatNum}>{selectedSection?.total_bays}</Text>
-              <Text style={s.bayStatLabel}>Bays</Text>
-            </View>
-            <View style={s.bayStatBox}>
-              <Text style={s.bayStatNum}>{selectedSection?.total_levels}</Text>
-              <Text style={s.bayStatLabel}>Levels</Text>
-            </View>
-          </LinearGradient>
-
-          {bayLoading ? (
-            <View style={s.centered}>
-              <ActivityIndicator size="large" color={T.primary} />
-            </View>
-          ) : (
-            <ScrollView style={s.bayBody} showsVerticalScrollIndicator={false}>
-              {Array.from(
-                { length: selectedSection?.total_bays || 0 },
-                (_, bayIndex) => {
-                  const bayNum = bayIndex + 1;
-                  const totalLevels = selectedSection?.total_levels || 3;
-                  const occupied = bayProducts.filter(
-                    (p) => p.bay === bayNum
-                  ).length;
-                  return (
-                    <View
-                      key={bayNum}
-                      style={[
-                        s.bayCard,
-                        { backgroundColor: T.surface, borderColor: T.border },
-                      ]}
-                    >
-                      <View style={s.bayCardTop}>
-                        <Text
-                          style={[s.bayCardTitle, { color: T.textPrimary }]}
-                        >
-                          Bay {bayNum}
-                        </Text>
-                        <View
-                          style={[
-                            s.occupancyBadge,
-                            { backgroundColor: T.primary + "12" },
-                          ]}
-                        >
-                          <Text style={[s.occupancyText, { color: T.primary }]}>
-                            {occupied}/{totalLevels}
-                          </Text>
-                        </View>
-                      </View>
-                      {Array.from({ length: totalLevels }, (_, li) => {
-                        const levelNum = totalLevels - li;
-                        const product = bayProducts.find(
-                          (p) => p.bay === bayNum && p.level === levelNum
-                        );
-                        return (
-                          <View key={levelNum} style={s.shelfRow}>
-                            <View
-                              style={[
-                                s.levelBadge,
-                                {
-                                  backgroundColor: T.background,
-                                  borderColor: T.border,
-                                },
-                              ]}
-                            >
-                              <Text
-                                style={[
-                                  s.levelText,
-                                  { color: T.textSecondary },
-                                ]}
-                              >
-                                L{levelNum}
-                              </Text>
-                            </View>
-                            <TouchableOpacity
-                              style={[
-                                s.shelf,
-                                {
-                                  backgroundColor: T.background,
-                                  borderColor: T.border,
-                                },
-                                product && {
-                                  backgroundColor: T.surface,
-                                  borderStyle: "solid",
-                                },
-                              ]}
-                              activeOpacity={product ? 0.7 : 1}
-                              onPress={() => {
-                                if (product?.products?.id) {
-                                  haptic.light();
-                                  closeBayView();
-                                  router.push(
-                                    `/product/${product.products.id}`
-                                  );
-                                }
-                              }}
-                            >
-                              {product ? (
-                                <View style={s.shelfProduct}>
-                                  <View
-                                    style={[
-                                      s.shelfAccent,
-                                      {
-                                        backgroundColor:
-                                          selectedSection?.color || T.primary,
-                                      },
-                                    ]}
-                                  />
-                                  <View style={{ flex: 1 }}>
-                                    <Text
-                                      style={[
-                                        s.shelfProductName,
-                                        { color: T.textPrimary },
-                                      ]}
-                                      numberOfLines={1}
-                                    >
-                                      {product.products?.name}
-                                    </Text>
-                                    <Text
-                                      style={[
-                                        s.shelfProductMeta,
-                                        { color: T.textSecondary },
-                                      ]}
-                                    >
-                                      {product.products?.category
-                                        ?.replace("_", "/")
-                                        .toUpperCase()}
-                                      {" \u2022 Qty: "}
-                                      {product.quantity}
-                                    </Text>
-                                  </View>
-                                  <FontAwesome
-                                    name="chevron-right"
-                                    size={10}
-                                    color={T.textSecondary}
-                                  />
-                                </View>
-                              ) : (
-                                <Text
-                                  style={[
-                                    s.shelfEmpty,
-                                    { color: T.textSecondary },
-                                  ]}
-                                >
-                                  Available
-                                </Text>
-                              )}
-                            </TouchableOpacity>
-                          </View>
-                        );
-                      })}
-                      <View
-                        style={[s.rackBase, { backgroundColor: T.border }]}
-                      />
-                    </View>
-                  );
-                }
-              )}
-              <View style={{ height: 40 }} />
-            </ScrollView>
-          )}
-        </View>
-      </Modal>
+      {selected ? (
+        <SectionSheet
+          open={!!selected}
+          section={selected}
+          stats={stats.get(selected.id) ?? null}
+          onClose={() => setSelectedId(null)}
+          theme={T}
+        />
+      ) : null}
     </View>
   );
 }
 
-const s = StyleSheet.create({
+// ─────────────────────────────────────────────────────────────────────────────
+// FLOOR VIEW — SVG canvas
+// ─────────────────────────────────────────────────────────────────────────────
+
+function FloorView({
+  warehouse,
+  sections,
+  stats,
+  onSelectSection,
+  theme: T,
+}: {
+  warehouse: WarehouseRow;
+  sections: SectionRow[];
+  stats: Map<string, SectionStats>;
+  onSelectSection: (id: string) => void;
+  theme: ReturnType<typeof useTheme>;
+}) {
+  const { width: screenW, height: screenH } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+
+  const horizontalPadding = layout.contentPaddingH * 2;
+  const verticalPadding = 240; // header + safe area + breathing room
+  const availableW = screenW - horizontalPadding;
+  const availableH = screenH - verticalPadding - insets.bottom;
+
+  const scaleX = availableW / warehouse.floor_canvas_width;
+  const scaleY = availableH / warehouse.floor_canvas_height;
+  const scale = Math.min(scaleX, scaleY);
+
+  const renderW = warehouse.floor_canvas_width * scale;
+  const renderH = warehouse.floor_canvas_height * scale;
+
+  return (
+    <ScrollView
+      contentContainerStyle={styles.floorWrap}
+      showsVerticalScrollIndicator={false}
+    >
+      {/* Caption strip — §11.6 wording: "facility" not "warehouse" */}
+      <View style={styles.captionRow}>
+        <Text
+          style={[type.labelSm, { color: T.textMuted, letterSpacing: 1.5 }]}
+        >
+          {sections.length} SECTIONS
+        </Text>
+        <Text style={[type.labelSm, { color: T.textDim, letterSpacing: 1.5 }]}>
+          {warehouse.floor_canvas_width.toFixed(0)} ×{" "}
+          {warehouse.floor_canvas_height.toFixed(0)}{" "}
+          {warehouse.floor_unit.toUpperCase()}
+        </Text>
+      </View>
+
+      {/* Canvas */}
+      <View
+        style={[
+          styles.canvas,
+          { borderColor: T.borderSubtle, width: renderW, height: renderH },
+        ]}
+      >
+        <Svg width={renderW} height={renderH}>
+          {/* Sections */}
+          {sections.map((s) => {
+            const x = s.floor_x * scale;
+            const y = s.floor_y * scale;
+            const w = s.floor_width * scale;
+            const h = s.floor_height * scale;
+            const cx = x + w / 2;
+            const cy = y + h / 2;
+            const fill = s.color ?? "#d4a853";
+            const rotateAttr = s.rotation
+              ? `rotate(${s.rotation}, ${cx}, ${cy})`
+              : undefined;
+
+            // Label scales with section size but clamps to a readable range
+            const fontSize = Math.max(11, Math.min(22, w / 6));
+
+            return (
+              <G
+                key={s.id}
+                transform={rotateAttr}
+                onPress={() => onSelectSection(s.id)}
+              >
+                <Rect
+                  x={x}
+                  y={y}
+                  width={w}
+                  height={h}
+                  fill={fill}
+                  fillOpacity={0.15}
+                  stroke={fill}
+                  strokeWidth={1.5}
+                />
+                <SvgText
+                  x={cx}
+                  y={cy}
+                  fill="#ffffff"
+                  fontSize={fontSize}
+                  fontWeight="500"
+                  textAnchor="middle"
+                  // RN-svg doesn't reliably honor alignmentBaseline; nudge dy.
+                  dy={fontSize / 3}
+                  letterSpacing={1}
+                >
+                  {s.code.trim()}
+                </SvgText>
+              </G>
+            );
+          })}
+        </Svg>
+      </View>
+
+      {/* Legend — list of sections with their color swatch */}
+      <Text
+        style={[
+          type.label,
+          {
+            color: T.textMuted,
+            letterSpacing: 2,
+            marginTop: space.s32,
+            marginBottom: space.s12,
+          },
+        ]}
+      >
+        SECTIONS
+      </Text>
+      <View style={[styles.legendList, { borderColor: T.borderSubtle }]}>
+        {sections.map((s, i) => {
+          const isLast = i === sections.length - 1;
+          const stat = stats.get(s.id);
+          return (
+            <Pressable
+              key={s.id}
+              onPress={() => onSelectSection(s.id)}
+              style={({ pressed }) => [
+                styles.legendRow,
+                {
+                  backgroundColor: pressed ? T.surface2 : "transparent",
+                  borderBottomColor: T.borderFaint,
+                  borderBottomWidth: isLast ? 0 : layout.hairlineWidth,
+                },
+              ]}
+            >
+              <View
+                style={[
+                  styles.legendSwatch,
+                  { backgroundColor: s.color ?? T.accent },
+                ]}
+              />
+              <View style={{ flex: 1 }}>
+                <View style={styles.legendTitleRow}>
+                  <Text
+                    style={[type.monoBody, { color: T.text, fontSize: 14 }]}
+                  >
+                    {s.code.trim()}
+                  </Text>
+                  <Text
+                    style={[
+                      type.labelSm,
+                      { color: T.textMuted, letterSpacing: 1.5 },
+                    ]}
+                  >
+                    {s.name.toUpperCase()}
+                  </Text>
+                </View>
+                <Text style={[type.monoSm, { color: T.textDim, marginTop: 2 }]}>
+                  {s.total_bays} bays · {s.total_levels} levels
+                  {stat
+                    ? `  ·  ${stat.total_stock.toLocaleString()} units`
+                    : ""}
+                </Text>
+              </View>
+              <Icon name="chevron-right" size={14} color={T.textDim} />
+            </Pressable>
+          );
+        })}
+      </View>
+
+      <View style={{ height: space.s120 }} />
+    </ScrollView>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION SHEET — bottom slide-up with section detail
+// ─────────────────────────────────────────────────────────────────────────────
+
+function SectionSheet({
+  open,
+  section,
+  stats,
+  onClose,
+  theme: T,
+}: {
+  open: boolean;
+  section: SectionRow;
+  stats: SectionStats | null;
+  onClose: () => void;
+  theme: ReturnType<typeof useTheme>;
+}) {
+  const insets = useSafeAreaInsets();
+  const swatch = section.color ?? T.accent;
+
+  return (
+    <Modal
+      visible={open}
+      transparent
+      animationType="slide"
+      onRequestClose={onClose}
+    >
+      <Pressable
+        onPress={onClose}
+        style={[styles.backdrop, { backgroundColor: T.modalBackdrop }]}
+      >
+        <Pressable
+          onPress={() => {}}
+          style={[
+            styles.sheet,
+            {
+              backgroundColor: T.bgElevated,
+              borderTopColor: T.borderSubtle,
+              paddingBottom: insets.bottom + space.s24,
+            },
+          ]}
+        >
+          {/* Header with code + close */}
+          <View style={styles.sheetHeader}>
+            <View style={styles.sheetHeaderLeft}>
+              <View style={[styles.sheetSwatch, { backgroundColor: swatch }]} />
+              <View>
+                <Text
+                  style={[
+                    type.displayLg,
+                    {
+                      color: T.text,
+                      fontFamily: type.monoBody.fontFamily,
+                      fontSize: 28,
+                      letterSpacing: -0.5,
+                    },
+                  ]}
+                >
+                  {section.code.trim()}
+                </Text>
+                <Text
+                  style={[
+                    type.labelSm,
+                    { color: T.textMuted, letterSpacing: 1.5 },
+                  ]}
+                >
+                  {section.name.toUpperCase()}
+                </Text>
+              </View>
+            </View>
+            <Pressable onPress={onClose} hitSlop={10}>
+              <Icon name="x" size={16} color={T.textMuted} />
+            </Pressable>
+          </View>
+
+          {/* KPI strip — 3 across, same anatomy as Product detail */}
+          <View style={[styles.sheetKpiStrip, { borderColor: T.borderSubtle }]}>
+            <SheetKpi
+              theme={T}
+              label="BAYS"
+              value={String(section.total_bays)}
+            />
+            <View
+              style={[
+                styles.sheetKpiDivider,
+                { backgroundColor: T.borderSubtle },
+              ]}
+            />
+            <SheetKpi
+              theme={T}
+              label="LEVELS"
+              value={String(section.total_levels)}
+            />
+            <View
+              style={[
+                styles.sheetKpiDivider,
+                { backgroundColor: T.borderSubtle },
+              ]}
+            />
+            <SheetKpi
+              theme={T}
+              label="ON HAND"
+              value={(stats?.total_stock ?? 0).toLocaleString()}
+              unit="units"
+            />
+          </View>
+
+          {/* Bay × level grid preview — §9.3-ish miniature */}
+          <Text
+            style={[
+              type.label,
+              { color: T.textMuted, letterSpacing: 2, marginTop: space.s24 },
+            ]}
+          >
+            LAYOUT · {section.total_bays} × {section.total_levels}
+          </Text>
+          <View style={styles.bayGrid}>
+            {Array.from({ length: section.total_levels }).map((_, levelIdx) => {
+              // Render top-most level first (visually highest rack level on top)
+              const levelNum = section.total_levels - levelIdx;
+              return (
+                <View key={levelNum} style={styles.bayRow}>
+                  <Text
+                    style={[
+                      type.labelSm,
+                      {
+                        color: T.textDim,
+                        width: 24,
+                        letterSpacing: 1,
+                      },
+                    ]}
+                  >
+                    L{levelNum}
+                  </Text>
+                  <View style={styles.bayCells}>
+                    {Array.from({ length: section.total_bays }).map(
+                      (_, bayIdx) => (
+                        <View
+                          key={bayIdx}
+                          style={[
+                            styles.bayCell,
+                            {
+                              borderColor: T.borderSubtle,
+                            },
+                          ]}
+                        />
+                      )
+                    )}
+                  </View>
+                </View>
+              );
+            })}
+            <View style={[styles.bayRow, { marginTop: space.s4 }]}>
+              <View style={{ width: 24 }} />
+              <View style={styles.bayCells}>
+                {Array.from({ length: section.total_bays }).map((_, bayIdx) => (
+                  <Text
+                    key={bayIdx}
+                    style={[
+                      type.labelSm,
+                      {
+                        flex: 1,
+                        color: T.textDim,
+                        textAlign: "center",
+                        letterSpacing: 1,
+                      },
+                    ]}
+                  >
+                    {bayIdx + 1}
+                  </Text>
+                ))}
+              </View>
+            </View>
+          </View>
+
+          {/* Footer action */}
+          <Pressable
+            onPress={() => {
+              haptic.light();
+              // TODO(phase-2.5): route to a section/bay detail screen
+              // showing product positions inside this section.
+            }}
+            style={({ pressed }) => [
+              styles.sheetAction,
+              {
+                borderColor: T.borderSubtle,
+                backgroundColor: pressed ? T.surface2 : "transparent",
+                marginTop: space.s24,
+              },
+            ]}
+          >
+            <Text style={[type.label, { color: T.accent, letterSpacing: 2 }]}>
+              VIEW BAYS
+            </Text>
+            <Icon name="chevron-right" size={14} color={T.accent} />
+          </Pressable>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+function SheetKpi({
+  theme: T,
+  label,
+  value,
+  unit,
+}: {
+  theme: ReturnType<typeof useTheme>;
+  label: string;
+  value: string;
+  unit?: string;
+}) {
+  return (
+    <View style={styles.sheetKpi}>
+      <Text style={[type.labelSm, { color: T.textMuted, letterSpacing: 1.5 }]}>
+        {label}
+      </Text>
+      <Text
+        style={[
+          type.displayLg,
+          {
+            color: T.text,
+            fontFamily: type.monoBody.fontFamily,
+            fontSize: 24,
+            marginTop: 4,
+          },
+        ]}
+      >
+        {value}
+      </Text>
+      {unit ? (
+        <Text
+          style={[
+            type.labelSm,
+            { color: T.textDim, marginTop: 2, letterSpacing: 1.5 },
+          ]}
+        >
+          {unit.toUpperCase()}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STYLES
+// ─────────────────────────────────────────────────────────────────────────────
+
+const styles = StyleSheet.create({
   screen: { flex: 1 },
-  centered: { flex: 1, justifyContent: "center", alignItems: "center" },
-  content: { flex: 1 },
-  titleRow: { paddingHorizontal: 20, marginTop: 16, marginBottom: 8 },
-  title: { fontSize: 20, fontWeight: "bold" },
-  subtitle: { fontSize: 12, marginTop: 2 },
-  mapArea: {
+
+  center: {
     flex: 1,
-    justifyContent: "center",
     alignItems: "center",
-    overflow: "hidden",
-  },
-  emptyState: {
-    flex: 1,
     justifyContent: "center",
-    alignItems: "center",
-    paddingHorizontal: 40,
+    paddingHorizontal: layout.contentPaddingH,
   },
-  emptyCircle: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 1,
-    marginBottom: 16,
+
+  // Floor canvas
+  floorWrap: {
+    padding: layout.contentPaddingH,
+    paddingTop: space.s16,
   },
-  emptyTitle: { fontSize: 17, fontWeight: "bold" },
-  emptySub: { fontSize: 13, marginTop: 4, textAlign: "center" },
-  rotatedContainer: {
-    justifyContent: "center",
-    alignItems: "center",
-    flexDirection: "row",
-  },
-  gridArea: { flex: 1, justifyContent: "center" },
-  col: { flexDirection: "row", justifyContent: "center", gap: 8 },
-  skeletonRow: { flexDirection: "row", justifyContent: "center" },
-  block: {
-    borderRadius: 14,
-    justifyContent: "center",
-    alignItems: "center",
-    padding: 6,
-  },
-  blockCode: { fontSize: 26, fontWeight: "bold", color: "#FFF" },
-  blockName: {
-    fontSize: 10,
-    color: "rgba(255,255,255,0.8)",
-    marginTop: 1,
-    paddingHorizontal: 4,
-  },
-  blockMeta: { fontSize: 8, color: "rgba(255,255,255,0.5)", marginTop: 2 },
-  aisle: { flexDirection: "row", alignItems: "center", paddingVertical: 8 },
-  aisleLine: { flex: 1, height: 1, borderWidth: 1, borderStyle: "dashed" },
-  aisleLabel: {
-    fontSize: 8,
-    fontWeight: "700",
-    letterSpacing: 2,
-    marginHorizontal: 10,
-  },
-  landmark: { alignItems: "center", justifyContent: "center", width: 44 },
-  landmarkIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    borderWidth: 1,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  landmarkText: {
-    fontSize: 7,
-    fontWeight: "700",
-    letterSpacing: 1,
-    marginTop: 3,
-  },
-  legendScroll: { maxHeight: 44, marginBottom: 100 },
-  legendChip: {
+  captionRow: {
     flexDirection: "row",
     alignItems: "center",
-    borderRadius: 20,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    marginRight: 8,
-    borderWidth: 1,
-  },
-  legendDot: { width: 10, height: 10, borderRadius: 5, marginRight: 6 },
-  legendCode: { fontSize: 13, fontWeight: "bold", marginRight: 4 },
-  legendName: { fontSize: 12 },
-  bayScreen: { flex: 1 },
-  bayHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingTop: 60,
-    paddingBottom: 20,
-    paddingHorizontal: 20,
-    borderBottomLeftRadius: 24,
-    borderBottomRightRadius: 24,
-  },
-  bayBack: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: "rgba(255,255,255,0.15)",
-    justifyContent: "center",
-    alignItems: "center",
-    marginRight: 14,
-  },
-  bayHeaderSub: {
-    fontSize: 13,
-    color: "rgba(255,255,255,0.6)",
-    fontWeight: "600",
-  },
-  bayHeaderTitle: {
-    fontSize: 22,
-    fontWeight: "bold",
-    color: "#FFF",
-    marginTop: 2,
-  },
-  bayStatBox: { alignItems: "center", marginLeft: 20 },
-  bayStatNum: { fontSize: 20, fontWeight: "bold", color: "#FFF" },
-  bayStatLabel: { fontSize: 10, color: "rgba(255,255,255,0.55)", marginTop: 1 },
-  bayBody: { flex: 1, paddingHorizontal: 20, paddingTop: 20 },
-  bayCard: { borderRadius: 16, padding: 16, marginBottom: 14, borderWidth: 1 },
-  bayCardTop: {
-    flexDirection: "row",
     justifyContent: "space-between",
+    marginBottom: space.s12,
+  },
+  canvas: {
+    alignSelf: "center",
+    borderWidth: layout.hairlineWidth,
+    // No background fill — sits on bg so it reads as a schematic
+  },
+
+  // Legend
+  legendList: {
+    borderWidth: layout.hairlineWidth,
+  },
+  legendRow: {
+    flexDirection: "row",
     alignItems: "center",
-    marginBottom: 12,
+    gap: space.s12,
+    paddingHorizontal: space.s12,
+    paddingVertical: space.s12,
+    minHeight: 56,
   },
-  bayCardTitle: { fontSize: 16, fontWeight: "bold" },
-  occupancyBadge: {
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 3,
+  legendSwatch: {
+    width: 6,
+    alignSelf: "stretch",
   },
-  occupancyText: { fontSize: 12, fontWeight: "bold" },
-  shelfRow: { flexDirection: "row", alignItems: "center", marginBottom: 6 },
-  levelBadge: {
-    width: 30,
-    height: 30,
-    borderRadius: 8,
-    justifyContent: "center",
+  legendTitleRow: {
+    flexDirection: "row",
     alignItems: "center",
-    marginRight: 10,
-    borderWidth: 1,
+    gap: space.s12,
   },
-  levelText: { fontSize: 11, fontWeight: "bold" },
-  shelf: {
+
+  // Sheet
+  backdrop: {
     flex: 1,
-    minHeight: 48,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderStyle: "dashed",
-    justifyContent: "center",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    justifyContent: "flex-end",
   },
-  shelfProduct: { flexDirection: "row", alignItems: "center" },
-  shelfAccent: { width: 4, height: 32, borderRadius: 2, marginRight: 10 },
-  shelfProductName: { fontSize: 13, fontWeight: "600" },
-  shelfProductMeta: { fontSize: 10, marginTop: 2 },
-  shelfEmpty: { fontSize: 12, fontStyle: "italic" },
-  rackBase: { height: 4, borderRadius: 2, marginTop: 8 },
+  sheet: {
+    borderTopWidth: layout.hairlineWidth,
+    paddingHorizontal: layout.contentPaddingH,
+    paddingTop: space.s20,
+  },
+  sheetHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: space.s20,
+  },
+  sheetHeaderLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.s16,
+  },
+  sheetSwatch: {
+    width: 6,
+    height: 36,
+  },
+
+  // KPI strip inside sheet
+  sheetKpiStrip: {
+    flexDirection: "row",
+    borderWidth: layout.hairlineWidth,
+  },
+  sheetKpi: {
+    flex: 1,
+    paddingVertical: space.s16,
+    paddingHorizontal: space.s12,
+    alignItems: "flex-start",
+  },
+  sheetKpiDivider: {
+    width: layout.hairlineWidth,
+  },
+
+  // Bay × level grid
+  bayGrid: {
+    marginTop: space.s12,
+  },
+  bayRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.s4,
+    marginTop: 4,
+  },
+  bayCells: {
+    flex: 1,
+    flexDirection: "row",
+    gap: 3,
+  },
+  bayCell: {
+    flex: 1,
+    height: 18,
+    borderWidth: layout.hairlineWidth,
+  },
+
+  // Footer action
+  sheetAction: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: space.s16,
+    paddingVertical: space.s16,
+    borderWidth: layout.hairlineWidth,
+  },
 });

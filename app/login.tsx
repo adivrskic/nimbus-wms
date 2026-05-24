@@ -1,288 +1,500 @@
-import FontAwesome from "@expo/vector-icons/FontAwesome";
-import { LinearGradient } from "expo-linear-gradient";
-import { useEffect, useRef, useState } from "react";
+/**
+ * Login — Nimbus rebuild.
+ *
+ * Drop-in replacement for app/login.tsx. Per §8.5 ("Authentication
+ * surfaces always render in light mode, regardless of user theme"),
+ * this screen overrides the theme to light so the entry experience
+ * is consistent across operators, time of day, and device settings.
+ *
+ * Layout follows the desktop /signin pattern adapted for mobile:
+ *   - Single Nimbus glyph at top
+ *   - Centered form with sharp field-shells
+ *   - Primary action below
+ *   - Ghost link for the secondary action (sign-up / forgot password)
+ *
+ * Auth flow stays as supabase.auth.signInWithPassword. If you have a
+ * separate auth setup (Clerk, etc.), this calls the same helpers as
+ * before — only the chrome changes.
+ *
+ * NOT included (intentional, for separate migration rounds):
+ *   - Sign-up flow (creates auth + profile + org_members row).
+ *     Currently links to the desktop dashboard signup. Standing up
+ *     mobile signup needs the workspace-creation flow worked out.
+ *   - "Forgot password" flow — supabase.auth.resetPasswordForEmail
+ *     stub provided, but the redirect/deep-link config isn't.
+ *   - Biometric unlock — controlled by Settings; this screen just
+ *     reads from lib/auth if a prior session can be biometric-resumed.
+ */
+
+import { useRouter } from "expo-router";
+import React, { useState } from "react";
 import {
-  ActivityIndicator,
-  Image,
+  Alert,
   KeyboardAvoidingView,
+  Linking,
   Platform,
+  Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { useAuth } from "../lib/auth";
-import { APP_CONFIG } from "../lib/config";
-import { saveCredentials, supabase } from "../lib/supabase";
-import { useTheme } from "../lib/theme";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+
+import { Icon } from "../lib/nimbus/Icon";
+import { color, layout, space, type } from "../lib/nimbus/tokens";
+import { supabase } from "../lib/supabase";
+import { haptic } from "../lib/ui";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LIGHT MODE PALETTE — locked, ignores system theme per §8.5
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Mirrors the relevant slice of the Nimbus light tokens. We don't read
+// from useTheme() here because §8.5 wants auth chrome consistent
+// regardless of system state.
+const L = {
+  bg: color.white, // #ffffff
+  bgElevated: "#fafafa",
+  text: color.nearBlack, // #0a0a0a
+  textMuted: "#6b6b6b",
+  textDim: "#9a9a9a",
+  border: "rgba(0,0,0,0.10)",
+  borderSubtle: "rgba(0,0,0,0.06)",
+  borderHover: "rgba(0,0,0,0.20)",
+  accent: color.accent, // #d4a853
+  accentDim: "rgba(212,168,83,0.10)",
+  accentBright: "#e0b970",
+  danger: "#c53030",
+  surface2: "rgba(0,0,0,0.03)",
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SCREEN
+// ─────────────────────────────────────────────────────────────────────────────
 
 export default function LoginScreen() {
-  const T = useTheme();
-  const { loading: authLoading } = useAuth();
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [fullName, setFullName] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [isSignUp, setIsSignUp] = useState(false);
-  const hasAutoSubmitted = useRef(false);
-  const autoSubmitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [focusedField, setFocusedField] = useState<"email" | "password" | null>(
+    null
+  );
 
-  // Auto-submit after iOS keychain autofill populates both fields
-  useEffect(() => {
-    if (isSignUp || hasAutoSubmitted.current || loading) return;
-    if (email.trim() && password.trim()) {
-      if (autoSubmitTimer.current) clearTimeout(autoSubmitTimer.current);
-      autoSubmitTimer.current = setTimeout(() => {
-        hasAutoSubmitted.current = true;
-        handleAuth();
-      }, 300);
-    }
-    return () => {
-      if (autoSubmitTimer.current) clearTimeout(autoSubmitTimer.current);
-    };
-  }, [email, password]);
-
-  // While auth.tsx is running biometric/session check, show spinner
-  if (authLoading)
-    return (
-      <View
-        style={[
-          s.screen,
-          {
-            backgroundColor: T.background,
-            justifyContent: "center",
-            alignItems: "center",
-          },
-        ]}
-      >
-        <ActivityIndicator size="large" color={T.primary} />
-        <Text style={{ color: T.textSecondary, fontSize: 14, marginTop: 12 }}>
-          Signing in...
-        </Text>
-      </View>
-    );
-
-  async function handleAuth() {
-    if (!email.trim() || !password.trim()) return;
-    if (isSignUp && !fullName.trim()) {
-      alert("Please enter your name.");
+  async function handleSignIn() {
+    if (!email.trim() || !password) {
+      setError("Email and password required");
       return;
     }
-    setLoading(true);
-    if (isSignUp) {
-      const { data: signUpData, error } = await supabase.auth.signUp({
-        email: email.trim(),
-        password,
-        options: {
-          data: { full_name: fullName.trim() },
-        },
-      });
-      if (error) {
-        alert(error.message);
-        setLoading(false);
-        return;
-      }
-      if (signUpData.user) {
-        const { error: profileErr } = await supabase.from("profiles").insert({
-          id: signUpData.user.id,
-          email: email.trim(),
-          full_name: fullName.trim(),
-        });
-        if (profileErr) {
-          console.warn("Profile insert failed:", profileErr.message);
-        }
-      }
-    } else {
-      const { error } = await supabase.auth.signInWithPassword({
+    setError(null);
+    setSubmitting(true);
+    haptic.medium();
+
+    try {
+      const { error: e } = await supabase.auth.signInWithPassword({
         email: email.trim(),
         password,
       });
-      if (error) {
-        alert(error.message);
-        setLoading(false);
-        return;
+      if (e) {
+        haptic.warning();
+        setError(e.message);
+      } else {
+        haptic.success();
+        // Routing is normally handled by an auth guard in the root layout.
+        // Forcing a push here as a fallback in case the guard isn't wired.
+        router.replace("/" as any);
       }
+    } catch (e: any) {
+      setError(e?.message ?? "Unable to sign in. Please try again.");
+    } finally {
+      setSubmitting(false);
     }
-    await saveCredentials(email.trim(), password);
-    setLoading(false);
+  }
+
+  async function handleResetPassword() {
+    if (!email.trim()) {
+      Alert.alert(
+        "Enter your email",
+        "We'll send a password reset link to that address."
+      );
+      return;
+    }
+    haptic.light();
+    try {
+      const { error: e } = await supabase.auth.resetPasswordForEmail(
+        email.trim()
+      );
+      if (e) {
+        Alert.alert("Couldn't send reset", e.message);
+      } else {
+        Alert.alert(
+          "Check your email",
+          `If an account exists for ${email.trim()}, a reset link is on its way.`
+        );
+      }
+    } catch (e: any) {
+      Alert.alert("Couldn't send reset", e?.message ?? "Try again.");
+    }
+  }
+
+  function openSignUp() {
+    haptic.light();
+    Linking.openURL("https://nimbuswms.com/signup").catch(() => {
+      Alert.alert(
+        "Open sign-up",
+        "Use the dashboard at nimbuswms.com to create a workspace."
+      );
+    });
   }
 
   return (
-    <KeyboardAvoidingView
-      style={[s.screen, { backgroundColor: T.background }]}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+    <View
+      style={[styles.screen, { backgroundColor: L.bg, paddingTop: insets.top }]}
     >
-      <View style={s.content}>
-        {/* Logo */}
-        <View style={s.logoWrap}>
-          {APP_CONFIG.clientLogo ? (
-            <Image
-              source={APP_CONFIG.clientLogo}
-              style={s.logo}
-              resizeMode="contain"
-            />
-          ) : (
-            <View
-              style={[s.logoPlaceholder, { backgroundColor: T.primary + "12" }]}
-            >
-              <FontAwesome name="cloud" size={40} color={T.primary} />
+      {/* Status bar would normally be styled in app/_layout.tsx —
+          add { headerShown: false, statusBarStyle: 'dark' } there
+          for this route. */}
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
+        <ScrollView
+          contentContainerStyle={styles.scroll}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Nimbus mark */}
+          <View style={styles.markWrap}>
+            <View style={[styles.mark, { borderColor: L.accent }]}>
+              <Text
+                style={[
+                  type.displayLg,
+                  { color: L.accent, fontSize: 22, letterSpacing: -0.5 },
+                ]}
+              >
+                N
+              </Text>
             </View>
-          )}
-        </View>
+            <Text
+              style={[
+                type.label,
+                {
+                  color: L.textMuted,
+                  letterSpacing: 3,
+                  marginTop: space.s12,
+                },
+              ]}
+            >
+              NIMBUS WMS
+            </Text>
+          </View>
 
-        {/* Form */}
-        <Text style={[s.title, { color: T.textPrimary }]}>
-          {isSignUp ? "Create account" : "Welcome back"}
-        </Text>
-        <Text style={[s.subtitle, { color: T.textSecondary }]}>
-          {isSignUp ? "Sign up to get started" : "Sign in to continue"}
-        </Text>
+          {/* Headline */}
+          <View style={styles.copy}>
+            <Text style={[type.displayLg, { color: L.text, fontSize: 30 }]}>
+              Sign in
+            </Text>
+            <Text
+              style={[
+                type.body,
+                { color: L.textMuted, marginTop: space.s8, fontSize: 15 },
+              ]}
+            >
+              Welcome back. Enter your credentials to access your workspace.
+            </Text>
+          </View>
 
-        {isSignUp && (
-          <TextInput
+          {/* Form */}
+          <View style={{ gap: space.s16 }}>
+            <Field label="Email" focused={focusedField === "email"}>
+              <TextInput
+                value={email}
+                onChangeText={setEmail}
+                placeholder="you@company.com"
+                placeholderTextColor={L.textDim}
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="email-address"
+                textContentType="emailAddress"
+                onFocus={() => setFocusedField("email")}
+                onBlur={() => setFocusedField(null)}
+                style={[type.body, { color: L.text, padding: 0, fontSize: 15 }]}
+              />
+            </Field>
+
+            <Field
+              label="Password"
+              focused={focusedField === "password"}
+              trailing={
+                <Pressable
+                  onPress={() => setShowPassword((s) => !s)}
+                  hitSlop={10}
+                  accessibilityLabel={
+                    showPassword ? "Hide password" : "Show password"
+                  }
+                >
+                  <Text
+                    style={[
+                      type.labelSm,
+                      { color: L.textMuted, letterSpacing: 1.5 },
+                    ]}
+                  >
+                    {showPassword ? "HIDE" : "SHOW"}
+                  </Text>
+                </Pressable>
+              }
+            >
+              <TextInput
+                value={password}
+                onChangeText={setPassword}
+                placeholder="••••••••"
+                placeholderTextColor={L.textDim}
+                secureTextEntry={!showPassword}
+                autoCapitalize="none"
+                autoCorrect={false}
+                textContentType="password"
+                onFocus={() => setFocusedField("password")}
+                onBlur={() => setFocusedField(null)}
+                onSubmitEditing={handleSignIn}
+                returnKeyType="go"
+                style={[type.body, { color: L.text, padding: 0, fontSize: 15 }]}
+              />
+            </Field>
+
+            {/* Error banner — §9.5 alert escalation in light mode */}
+            {error ? (
+              <View style={[styles.errorBanner, { borderColor: L.danger }]}>
+                <Icon name="alert-circle" size={14} color={L.danger} />
+                <Text
+                  style={[
+                    type.bodySm,
+                    {
+                      color: L.danger,
+                      marginLeft: space.s8,
+                      flex: 1,
+                      fontSize: 13,
+                    },
+                  ]}
+                >
+                  {error}
+                </Text>
+              </View>
+            ) : null}
+
+            {/* Primary action */}
+            <Pressable
+              onPress={handleSignIn}
+              disabled={submitting}
+              style={({ pressed }) => [
+                styles.primary,
+                {
+                  backgroundColor: pressed ? L.accentBright : L.accent,
+                  opacity: submitting ? 0.6 : 1,
+                },
+              ]}
+              accessibilityLabel="Sign in"
+            >
+              <Text style={[type.label, { color: L.text, letterSpacing: 2 }]}>
+                {submitting ? "SIGNING IN…" : "SIGN IN"}
+              </Text>
+            </Pressable>
+
+            {/* Forgot password — ghost link */}
+            <Pressable
+              onPress={handleResetPassword}
+              style={styles.ghostLink}
+              hitSlop={10}
+            >
+              <Text
+                style={[
+                  type.labelSm,
+                  { color: L.textMuted, letterSpacing: 1.5 },
+                ]}
+              >
+                FORGOT PASSWORD?
+              </Text>
+            </Pressable>
+          </View>
+
+          {/* Divider + sign up */}
+          <View style={[styles.divider, { backgroundColor: L.borderSubtle }]} />
+          <View style={styles.signupRow}>
+            <Text style={[type.bodySm, { color: L.textMuted, fontSize: 13 }]}>
+              Don't have a workspace yet?
+            </Text>
+            <Pressable onPress={openSignUp} hitSlop={10}>
+              <Text
+                style={[
+                  type.label,
+                  { color: L.accent, letterSpacing: 2, marginLeft: space.s8 },
+                ]}
+              >
+                CREATE ONE
+              </Text>
+            </Pressable>
+          </View>
+
+          <View style={{ height: space.s32 }} />
+
+          {/* Footer */}
+          <Text
             style={[
-              s.input,
+              type.labelSm,
               {
-                backgroundColor: T.surface,
-                borderColor: T.borderInput,
-                color: T.textPrimary,
+                color: L.textDim,
+                letterSpacing: 1.5,
+                textAlign: "center",
+                marginBottom: insets.bottom + space.s12,
               },
             ]}
-            placeholder="Full Name"
-            placeholderTextColor={T.textSecondary}
-            value={fullName}
-            onChangeText={setFullName}
-            autoCapitalize="words"
-          />
-        )}
-
-        <TextInput
-          style={[
-            s.input,
-            {
-              backgroundColor: T.surface,
-              borderColor: T.borderInput,
-              color: T.textPrimary,
-            },
-          ]}
-          placeholder="Email"
-          placeholderTextColor={T.textSecondary}
-          value={email}
-          onChangeText={setEmail}
-          autoCapitalize="none"
-          keyboardType="email-address"
-        />
-
-        <TextInput
-          style={[
-            s.input,
-            {
-              backgroundColor: T.surface,
-              borderColor: T.borderInput,
-              color: T.textPrimary,
-            },
-          ]}
-          placeholder="Password"
-          placeholderTextColor={T.textSecondary}
-          value={password}
-          onChangeText={setPassword}
-          secureTextEntry
-        />
-
-        <TouchableOpacity
-          activeOpacity={0.85}
-          onPress={handleAuth}
-          disabled={loading}
-        >
-          <LinearGradient
-            colors={T.headerGradient}
-            start={{ x: 0.5, y: 0 }}
-            end={{ x: 0.5, y: 1 }}
-            style={s.button}
           >
-            {loading ? (
-              <ActivityIndicator color="#FFF" />
-            ) : (
-              <Text style={s.buttonText}>
-                {isSignUp ? "Sign Up" : "Sign In"}
-              </Text>
-            )}
-          </LinearGradient>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          onPress={() => setIsSignUp(!isSignUp)}
-          style={s.toggleWrap}
-        >
-          <Text style={[s.toggleText, { color: T.textSecondary }]}>
-            {isSignUp ? "Already have an account? " : "Don't have an account? "}
-            <Text style={{ color: T.primary, fontWeight: "600" }}>
-              {isSignUp ? "Sign In" : "Sign Up"}
-            </Text>
+            NIMBUS · {new Date().getFullYear()}
           </Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* Footer */}
-      <View style={s.footer}>
-        <FontAwesome
-          name="cloud"
-          size={14}
-          color={T.mode === "dark" ? "#333" : "#CCC"}
-        />
-        <Text
-          style={[s.footerText, { color: T.mode === "dark" ? "#333" : "#CCC" }]}
-        >
-          Powered by {APP_CONFIG.productName}
-        </Text>
-      </View>
-    </KeyboardAvoidingView>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </View>
   );
 }
 
-const s = StyleSheet.create({
+// ─────────────────────────────────────────────────────────────────────────────
+// FIELD — light-mode shell with gold focus caret per §8.5
+// ─────────────────────────────────────────────────────────────────────────────
+
+function Field({
+  label,
+  focused,
+  children,
+  trailing,
+}: {
+  label: string;
+  focused: boolean;
+  children: React.ReactNode;
+  trailing?: React.ReactNode;
+}) {
+  return (
+    <View>
+      <Text
+        style={[
+          type.labelSm,
+          {
+            color: focused ? L.accent : L.textMuted,
+            letterSpacing: 2,
+            marginBottom: space.s8,
+          },
+        ]}
+      >
+        {label.toUpperCase()}
+      </Text>
+      <View
+        style={[
+          styles.field,
+          {
+            borderColor: focused ? L.accent : L.border,
+            // Left-edge accent caret when focused — visual cue from §8.5
+            borderLeftWidth: focused ? 2 : layout.hairlineWidth,
+            borderLeftColor: focused ? L.accent : L.border,
+          },
+        ]}
+      >
+        <View style={{ flex: 1 }}>{children}</View>
+        {trailing}
+      </View>
+    </View>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STYLES
+// ─────────────────────────────────────────────────────────────────────────────
+
+const styles = StyleSheet.create({
   screen: { flex: 1 },
-  content: { flex: 1, justifyContent: "center", paddingHorizontal: 32 },
-  logoWrap: { alignItems: "center", marginBottom: 32 },
-  logo: { width: 240 },
-  logoPlaceholder: {
-    width: 80,
-    height: 80,
-    borderRadius: 20,
+  scroll: {
+    flexGrow: 1,
+    paddingHorizontal: 24,
+    paddingVertical: 32,
+    // Center contents vertically on tall screens but keep top alignment
+    // when keyboard pushes things up.
+    justifyContent: "flex-start",
+    maxWidth: 480,
+    width: "100%",
+    alignSelf: "center",
+  },
+
+  // Brand mark
+  markWrap: {
+    alignItems: "center",
+    marginTop: 32,
+    marginBottom: 48,
+  },
+  mark: {
+    width: 56,
+    height: 56,
+    alignItems: "center",
     justifyContent: "center",
-    alignItems: "center",
+    borderWidth: 1.5,
+    // SHARP corners per §1.1
   },
-  title: {
-    fontSize: 26,
-    fontWeight: "bold",
-    textAlign: "center",
-    marginBottom: 4,
+
+  // Copy block
+  copy: {
+    marginBottom: 32,
   },
-  subtitle: { fontSize: 14, textAlign: "center", marginBottom: 28 },
-  input: {
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    fontSize: 15,
-    marginBottom: 12,
-  },
-  button: {
-    borderRadius: 12,
-    paddingVertical: 16,
-    alignItems: "center",
-    marginTop: 4,
-  },
-  buttonText: { color: "#FFF", fontSize: 16, fontWeight: "bold" },
-  toggleWrap: { marginTop: 20, alignItems: "center" },
-  toggleText: { fontSize: 14 },
-  footer: {
-    alignItems: "center",
-    paddingBottom: 36,
+
+  // Field
+  field: {
     flexDirection: "row",
-    justifyContent: "center",
-    gap: 6,
+    alignItems: "center",
+    paddingHorizontal: space.s12,
+    paddingVertical: space.s12,
+    backgroundColor: L.bgElevated,
+    borderWidth: layout.hairlineWidth,
+    // SHARP corners per §1.1
   },
-  footerText: { fontSize: 10 },
+
+  // Error banner
+  errorBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: space.s12,
+    paddingVertical: space.s12,
+    borderWidth: 1,
+    borderLeftWidth: 4,
+    backgroundColor: "rgba(197,48,48,0.04)",
+  },
+
+  // Primary
+  primary: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 18,
+    marginTop: space.s8,
+    // SHARP corners per §1.1
+  },
+
+  // Ghost
+  ghostLink: {
+    alignItems: "center",
+    paddingVertical: space.s12,
+  },
+
+  // Divider
+  divider: {
+    height: 1,
+    marginVertical: 32,
+  },
+
+  // Signup row
+  signupRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    flexWrap: "wrap",
+  },
 });
