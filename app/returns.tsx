@@ -46,7 +46,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { ScreenHeader } from "../lib/nimbus/Header";
 import { Icon } from "../lib/nimbus/Icon";
-import { layout, space, type } from "../lib/nimbus/tokens";
+import { color, layout, space, type } from "../lib/nimbus/tokens";
 import { supabase } from "../lib/supabase";
 import { useTheme } from "../lib/theme";
 import { haptic } from "../lib/ui";
@@ -236,7 +236,9 @@ export default function ReturnsScreen() {
               { backgroundColor: pressed ? T.accentBright : T.accent },
             ]}
           >
-            <Text style={[type.label, { color: "#000", letterSpacing: 2 }]}>
+            <Text
+              style={[type.label, { color: color.black, letterSpacing: 2 }]}
+            >
               LOG A RETURN
             </Text>
           </Pressable>
@@ -805,7 +807,7 @@ function LogReturnSheet({
                               style={{
                                 width: 6,
                                 height: 6,
-                                backgroundColor: "#000",
+                                backgroundColor: color.black,
                               }}
                             />
                           ) : null}

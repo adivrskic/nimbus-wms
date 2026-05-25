@@ -23,6 +23,7 @@
  * silently 404'ing.
  */
 
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -39,11 +40,12 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { LINKS } from "../../lib/links";
 import { ScreenHeader } from "../../lib/nimbus/Header";
 import { Icon, IconName } from "../../lib/nimbus/Icon";
 import { layout, space, type } from "../../lib/nimbus/tokens";
 import { usePermissions } from "../../lib/permissions";
-import { supabase } from "../../lib/supabase";
+import { clearCredentials, supabase } from "../../lib/supabase";
 import { useTheme, useThemeToggle } from "../../lib/theme";
 import { haptic } from "../../lib/ui";
 import { useWarehouse } from "../../lib/warehouse";
@@ -60,6 +62,11 @@ const APP_INFO = {
   clientName: "American Flooring Services",
   version: "1.0.0",
 };
+
+// Preference keys. `nimbus_pref_biometric` is also read by lib/auth.tsx to
+// decide whether to offer the biometric fast-path on launch.
+const PREF_BIOMETRIC = "nimbus_pref_biometric";
+const PREF_NOTIFICATIONS = "nimbus_pref_notifications";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TYPES
@@ -93,6 +100,19 @@ export default function SettingsScreen() {
   const [profileEditOpen, setProfileEditOpen] = useState(false);
   const [facilitySheetOpen, setFacilitySheetOpen] = useState(false);
   const [placeholderSheet, setPlaceholderSheet] = useState<string | null>(null);
+
+  // Hydrate persisted preferences. Biometric defaults to on (matches
+  // lib/auth.tsx, which treats a missing value as enabled).
+  useEffect(() => {
+    (async () => {
+      const [bio, notif] = await Promise.all([
+        AsyncStorage.getItem(PREF_BIOMETRIC),
+        AsyncStorage.getItem(PREF_NOTIFICATIONS),
+      ]);
+      setBiometricEnabled(bio !== "false");
+      setNotificationsEnabled(notif !== "false");
+    })();
+  }, []);
 
   const loadProfile = useCallback(async () => {
     const { data: u } = await supabase.auth.getUser();
@@ -128,9 +148,14 @@ export default function SettingsScreen() {
           style: "destructive",
           onPress: async () => {
             haptic.medium();
+            // Clear the stored credentials + biometric fast-path first, so a
+            // signed-out device can't be biometric-unlocked back into this
+            // account (lib/auth.tsx reads these on launch).
+            try {
+              await clearCredentials();
+              await AsyncStorage.setItem(PREF_BIOMETRIC, "false");
+            } catch {}
             await supabase.auth.signOut();
-            // TODO: also clear any local credentials/biometric state
-            // via your existing lib/auth helper if needed.
           },
         },
       ]
@@ -249,7 +274,10 @@ export default function SettingsScreen() {
                 onValueChange={(v) => {
                   haptic.selection();
                   setNotificationsEnabled(v);
-                  // TODO: persist to lib/preferences or AsyncStorage
+                  AsyncStorage.setItem(
+                    PREF_NOTIFICATIONS,
+                    v ? "true" : "false"
+                  ).catch(() => {});
                 }}
                 trackColor={{ true: T.accent, false: T.borderSubtle }}
                 thumbColor={T.text}
@@ -258,7 +286,7 @@ export default function SettingsScreen() {
           />
           <SettingsRow
             theme={T}
-            icon="settings"
+            icon="fingerprint"
             label="Biometric unlock"
             trailing={
               <Switch
@@ -266,7 +294,11 @@ export default function SettingsScreen() {
                 onValueChange={(v) => {
                   haptic.selection();
                   setBiometricEnabled(v);
-                  // TODO: wire to expo-local-authentication via lib/auth
+                  // Read by lib/auth.tsx on launch to gate the biometric path.
+                  AsyncStorage.setItem(
+                    PREF_BIOMETRIC,
+                    v ? "true" : "false"
+                  ).catch(() => {});
                 }}
                 trackColor={{ true: T.accent, false: T.borderSubtle }}
                 thumbColor={T.text}
@@ -336,13 +368,22 @@ export default function SettingsScreen() {
           />
         </View>
 
-        {/* Legal */}
+        {/* Support & legal */}
         <View
           style={[
             styles.list,
             { borderColor: T.borderSubtle, marginTop: space.s16 },
           ]}
         >
+          <SettingsRow
+            theme={T}
+            icon="help-circle"
+            label="Help & support"
+            onPress={() => {
+              haptic.light();
+              Linking.openURL(LINKS.help).catch(() => {});
+            }}
+          />
           <SettingsRow
             theme={T}
             icon="clipboard-list"
@@ -841,12 +882,12 @@ const PLACEHOLDER_COPY: Record<string, { title: string; description: string }> =
     terms: {
       title: "Terms of service",
       description:
-        "View the latest terms on the web at nimbuswms.com/legal/terms.",
+        "View the latest terms on the web at nautilusinventory.com/legal/terms.",
     },
     privacy: {
       title: "Privacy policy",
       description:
-        "View the latest policy on the web at nimbuswms.com/legal/privacy.",
+        "View the latest policy on the web at nautilusinventory.com/legal/privacy.",
     },
   };
 
@@ -910,10 +951,7 @@ function PlaceholderSheet({
           {(kind === "terms" || kind === "privacy") && (
             <Pressable
               onPress={() => {
-                const url =
-                  kind === "terms"
-                    ? "https://nimbuswms.com/legal/terms"
-                    : "https://nimbuswms.com/legal/privacy";
+                const url = kind === "terms" ? LINKS.terms : LINKS.privacy;
                 Linking.openURL(url).catch(() => {});
               }}
               style={({ pressed }) => [

@@ -42,6 +42,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { LINKS } from "../lib/links";
 import { Icon } from "../lib/nimbus/Icon";
 import { color, layout, space, type } from "../lib/nimbus/tokens";
 import { supabase } from "../lib/supabase";
@@ -145,10 +146,10 @@ export default function LoginScreen() {
 
   function openSignUp() {
     haptic.light();
-    Linking.openURL("https://nimbuswms.com/signup").catch(() => {
+    Linking.openURL(LINKS.signup).catch(() => {
       Alert.alert(
         "Open sign-up",
-        "Use the dashboard at nimbuswms.com to create a workspace."
+        "Use the dashboard at nautilusinventory.com to create a workspace."
       );
     });
   }

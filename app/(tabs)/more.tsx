@@ -10,7 +10,7 @@
  *   2. Purchase orders → /purchase-orders  (queue + create + detail/receive)
  *   3. Returns       → /returns            (list + log form sheet)
  *   4. Notifications → /notifications      (activity feed)
- *   5. Analytics     → /analytics          (TODO — placeholder)
+ *   5. Analytics     → /analytics
  *   6. Settings      → /settings           (inside (tabs)/, hidden via href:null)
  *   ──────
  *   Sign out         → confirmation alert + supabase.auth.signOut
@@ -30,6 +30,7 @@ import {
 import { ScreenHeader } from "../../lib/nimbus/Header";
 import { Icon, IconName } from "../../lib/nimbus/Icon";
 import { layout, space, type } from "../../lib/nimbus/tokens";
+import { Permissions, usePermissions } from "../../lib/permissions";
 import { supabase } from "../../lib/supabase";
 import { useTheme } from "../../lib/theme";
 import { haptic } from "../../lib/ui";
@@ -43,6 +44,8 @@ interface MoreItem {
   hint?: string;
   route?: string;
   comingSoon?: boolean;
+  // If set, the item is only shown when the current role has this permission.
+  requires?: keyof Permissions;
 }
 
 const ITEMS: MoreItem[] = [
@@ -73,8 +76,9 @@ const ITEMS: MoreItem[] = [
   {
     icon: "bar-chart-3",
     label: "Analytics",
-    hint: "Workspace metrics — desktop for now",
-    comingSoon: true,
+    hint: "Reports and workspace metrics",
+    route: "/analytics",
+    requires: "canViewReports",
   },
   {
     icon: "settings",
@@ -92,6 +96,8 @@ export default function MoreScreen() {
   const T = useTheme();
   const router = useRouter();
   const { warehouseName } = useWarehouse();
+  const perms = usePermissions();
+  const items = ITEMS.filter((it) => !it.requires || perms[it.requires]);
 
   function handleNav(item: MoreItem) {
     haptic.light();
@@ -132,8 +138,8 @@ export default function MoreScreen() {
 
       <ScrollView contentContainerStyle={{ paddingBottom: space.s64 }}>
         <View style={[styles.list, { borderColor: T.borderSubtle }]}>
-          {ITEMS.map((item, idx) => {
-            const isLast = idx === ITEMS.length - 1;
+          {items.map((item, idx) => {
+            const isLast = idx === items.length - 1;
             return (
               <Pressable
                 key={item.label}

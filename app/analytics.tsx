@@ -1,10 +1,7 @@
-import FontAwesome from "@expo/vector-icons/FontAwesome";
-import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
-  Animated,
-  Platform,
+  Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -12,22 +9,22 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { ScreenHeader } from "../lib/nimbus/Header";
+import { Icon, IconName } from "../lib/nimbus/Icon";
+import { color, layout, radius, space, type } from "../lib/nimbus/tokens";
+import { usePermissions } from "../lib/permissions";
 import { supabase } from "../lib/supabase";
 import { useTheme } from "../lib/theme";
 import { AnimatedCounter, Skeleton, haptic } from "../lib/ui";
 import { useWarehouse } from "../lib/warehouse";
 
-const STATUS_BAR = Platform.OS === "ios" ? 54 : 36;
-const HEADER_FULL = 280;
-const HEADER_COMPACT = STATUS_BAR + 64;
-const SCROLL_RANGE = 100;
-
 type Tab = "overview" | "inventory" | "activity" | "operations";
-const TABS: { key: Tab; label: string; icon: string }[] = [
-  { key: "overview", label: "Overview", icon: "dashboard" },
-  { key: "inventory", label: "Inventory", icon: "cubes" },
-  { key: "activity", label: "Activity", icon: "bolt" },
-  { key: "operations", label: "Operations", icon: "truck" },
+const TABS: { key: Tab; label: string }[] = [
+  { key: "overview", label: "Overview" },
+  { key: "inventory", label: "Inventory" },
+  { key: "activity", label: "Activity" },
+  { key: "operations", label: "Operations" },
 ];
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -45,15 +42,15 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 const ACTION_CONFIG: Record<
   string,
-  { label: string; color: string; icon: string }
+  { label: string; color: string; icon: IconName }
 > = {
-  register: { label: "Registered", color: "#22C55E", icon: "plus-circle" },
+  register: { label: "Registered", color: "#22C55E", icon: "plus" },
   locate: { label: "Located", color: "#1565C0", icon: "search" },
-  relocate: { label: "Relocated", color: "#F57C00", icon: "arrows" },
-  pick: { label: "Picked", color: "#6A1B9A", icon: "hand-rock-o" },
+  relocate: { label: "Relocated", color: "#F57C00", icon: "move" },
+  pick: { label: "Picked", color: "#6A1B9A", icon: "package" },
   receive: { label: "Received", color: "#00838F", icon: "truck" },
-  return: { label: "Returned", color: "#D32F2F", icon: "undo" },
-  cycle_count: { label: "Counted", color: "#4E342E", icon: "check-square-o" },
+  return: { label: "Returned", color: "#D32F2F", icon: "rotate-ccw" },
+  cycle_count: { label: "Counted", color: "#4E342E", icon: "check" },
   adjust: { label: "Adjusted", color: "#37474F", icon: "sliders" },
 };
 
@@ -61,7 +58,7 @@ export default function AnalyticsScreen() {
   const T = useTheme();
   const router = useRouter();
   const { warehouseId, warehouseName } = useWarehouse();
-  const scrollY = useRef(new Animated.Value(0)).current;
+  const perms = usePermissions();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>("overview");
@@ -386,74 +383,55 @@ export default function AnalyticsScreen() {
   const totalActions = actionBreakdown.reduce((sum, a) => sum + a.count, 0);
   const maxDailyCount = Math.max(...dailyActivity.map((d) => d.count), 1);
 
-  // Header animations
-  const headerHeight = scrollY.interpolate({
-    inputRange: [0, SCROLL_RANGE],
-    outputRange: [HEADER_FULL, HEADER_COMPACT],
-    extrapolate: "clamp",
-  });
-  const detailsOpacity = scrollY.interpolate({
-    inputRange: [0, SCROLL_RANGE * 0.3],
-    outputRange: [1, 0],
-    extrapolate: "clamp",
-  });
-  const statsOpacity = scrollY.interpolate({
-    inputRange: [0, SCROLL_RANGE * 0.5],
-    outputRange: [1, 0],
-    extrapolate: "clamp",
-  });
-  const nameFontSize = scrollY.interpolate({
-    inputRange: [0, SCROLL_RANGE],
-    outputRange: [24, 17],
-    extrapolate: "clamp",
-  });
+  const insets = useSafeAreaInsets();
+
+  if (!perms.canViewReports) {
+    return (
+      <View style={[s.screen, { backgroundColor: T.bg }]}>
+        <ScreenHeader
+          title="Reports"
+          leading={
+            <Pressable
+              onPress={() => router.back()}
+              hitSlop={10}
+              accessibilityLabel="Back"
+            >
+              <Icon name="arrow-left" size={18} color={T.text} />
+            </Pressable>
+          }
+        />
+        <View style={s.noAccess}>
+          <Icon name="bar-chart-3" size={28} color={T.textDim} />
+          <Text
+            style={[type.body, { color: T.textMuted, textAlign: "center" }]}
+          >
+            Reports are available to managers. Ask an admin for access, or view
+            them on the desktop dashboard.
+          </Text>
+        </View>
+      </View>
+    );
+  }
 
   return (
-    <View style={[s.screen, { backgroundColor: T.background }]}>
-      <Animated.View style={[s.headerWrap, { height: headerHeight }]}>
-        <LinearGradient
-          colors={T.headerGradient}
-          start={{ x: 0.5, y: 0 }}
-          end={{ x: 0.5, y: 1 }}
-          style={s.headerGradient}
-        >
-          <View style={s.headerTop}>
-            <TouchableOpacity onPress={() => router.back()} style={s.backBtn}>
-              <FontAwesome name="arrow-left" size={16} color="#FFF" />
-            </TouchableOpacity>
-            <Animated.Text style={[s.headerTitle, { fontSize: nameFontSize }]}>
-              Reports
-            </Animated.Text>
-            <View style={{ width: 36 }} />
-          </View>
-          <Animated.View style={{ opacity: detailsOpacity }}>
-            <Text style={s.headerSub}>{warehouseName}</Text>
-          </Animated.View>
-          {!loading && (
-            <Animated.View style={{ opacity: statsOpacity }}>
-              <View style={s.statGrid}>
-                <StatCard icon="cube" label="Products" value={stats.products} />
-                <StatCard icon="archive" label="Stock" value={stats.stock} />
-                <StatCard icon="bolt" label="Today" value={stats.scansToday} />
-                <StatCard
-                  icon="exclamation-triangle"
-                  label="Low"
-                  value={stats.lowStock}
-                />
-              </View>
-            </Animated.View>
-          )}
-        </LinearGradient>
-      </Animated.View>
+    <View style={[s.screen, { backgroundColor: T.bg }]}>
+      <ScreenHeader
+        eyebrow={warehouseName ? `Facility · ${warehouseName}` : undefined}
+        title="Reports"
+        leading={
+          <Pressable
+            onPress={() => router.back()}
+            hitSlop={10}
+            accessibilityLabel="Back"
+          >
+            <Icon name="arrow-left" size={18} color={T.text} />
+          </Pressable>
+        }
+      />
 
-      <Animated.ScrollView
+      <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingTop: HEADER_FULL, paddingBottom: 120 }}
-        onScroll={Animated.event(
-          [{ nativeEvent: { contentOffset: { y: scrollY } } }],
-          { useNativeDriver: false }
-        )}
-        scrollEventThrottle={16}
+        contentContainerStyle={{ paddingBottom: space.s40 + insets.bottom }}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -462,57 +440,62 @@ export default function AnalyticsScreen() {
               haptic.light();
               loadAll();
             }}
-            tintColor="#FFF"
+            tintColor={T.accent}
           />
         }
       >
+        {/* KPI strip */}
+        {!loading && (
+          <View style={[s.kpiStrip, { borderColor: T.borderSubtle }]}>
+            <KpiCell T={T} label="Products" value={stats.products} />
+            <View style={[s.kpiDivider, { backgroundColor: T.borderSubtle }]} />
+            <KpiCell T={T} label="Stock" value={stats.stock} />
+            <View style={[s.kpiDivider, { backgroundColor: T.borderSubtle }]} />
+            <KpiCell T={T} label="Today" value={stats.scansToday} />
+            <View style={[s.kpiDivider, { backgroundColor: T.borderSubtle }]} />
+            <KpiCell
+              T={T}
+              label="Low"
+              value={stats.lowStock}
+              tint={stats.lowStock > 0 ? T.warning : undefined}
+            />
+          </View>
+        )}
+
         <View style={s.body}>
           {/* Tab bar */}
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
             style={s.tabBar}
-            contentContainerStyle={{ paddingRight: 20 }}
+            contentContainerStyle={{ paddingRight: space.s20 }}
           >
             {TABS.map((tab) => {
               const active = activeTab === tab.key;
               return (
                 <TouchableOpacity
                   key={tab.key}
-                  style={s.tab}
                   onPress={() => {
                     setActiveTab(tab.key);
                     haptic.selection();
                   }}
                   activeOpacity={0.7}
+                  style={[
+                    s.tab,
+                    {
+                      backgroundColor: active ? T.accent : "transparent",
+                      borderColor: active ? T.accent : T.borderSubtle,
+                    },
+                  ]}
                 >
-                  {active ? (
-                    <LinearGradient
-                      colors={T.headerGradient}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 0 }}
-                      style={s.tabActive}
-                    >
-                      <FontAwesome
-                        name={tab.icon as any}
-                        size={11}
-                        color="#FFF"
-                        style={{ marginRight: 5 }}
-                      />
-                      <Text style={s.tabTextActive}>{tab.label}</Text>
-                    </LinearGradient>
-                  ) : (
-                    <View
-                      style={[
-                        s.tabInactive,
-                        { backgroundColor: T.surface, borderColor: T.border },
-                      ]}
-                    >
-                      <Text style={[s.tabText, { color: T.textSecondary }]}>
-                        {tab.label}
-                      </Text>
-                    </View>
-                  )}
+                  <Text
+                    style={[
+                      type.label,
+                      { color: active ? color.black : T.textMuted },
+                    ]}
+                  >
+                    {tab.label}
+                  </Text>
                 </TouchableOpacity>
               );
             })}
@@ -525,7 +508,7 @@ export default function AnalyticsScreen() {
                   key={i}
                   width="100%"
                   height={80}
-                  borderRadius={14}
+                  borderRadius={0}
                   style={{ marginBottom: 12 }}
                 />
               ))}
@@ -565,7 +548,7 @@ export default function AnalyticsScreen() {
             />
           )}
         </View>
-      </Animated.ScrollView>
+      </ScrollView>
     </View>
   );
 }
@@ -595,7 +578,7 @@ function OverviewTab({
               label={CATEGORY_LABELS[item.category] || item.category}
               value={item.count}
               max={maxCat}
-              color={T.primary}
+              color={T.accent}
               T={T}
             />
           ))
@@ -611,7 +594,7 @@ function OverviewTab({
             <View key={sec.code} style={s.sectionRow}>
               <View style={[s.sectionDot, { backgroundColor: sec.color }]} />
               <View style={{ flex: 1 }}>
-                <Text style={[s.sectionCode, { color: T.textPrimary }]}>
+                <Text style={[s.sectionCode, { color: T.text }]}>
                   {sec.code} {"\u2014"} {sec.name}
                 </Text>
                 <View style={s.fillBarBg}>
@@ -633,10 +616,10 @@ function OverviewTab({
                 </View>
               </View>
               <View style={{ alignItems: "flex-end" }}>
-                <Text style={[s.sectionQty, { color: T.textPrimary }]}>
+                <Text style={[s.sectionQty, { color: T.text }]}>
                   {sec.quantity}
                 </Text>
-                <Text style={[s.sectionCap, { color: T.textSecondary }]}>
+                <Text style={[s.sectionCap, { color: T.textMuted }]}>
                   {sec.capacity} slots
                 </Text>
               </View>
@@ -678,20 +661,27 @@ function OverviewTab({
               return (
                 <View
                   key={item.action}
-                  style={[s.breakdownRow, { borderBottomColor: T.border }]}
+                  style={[
+                    s.breakdownRow,
+                    { borderBottomColor: T.borderSubtle },
+                  ]}
                 >
                   <View
                     style={[s.breakdownDot, { backgroundColor: cfg.color }]}
                   >
-                    <FontAwesome name={cfg.icon as any} size={8} color="#FFF" />
+                    <Icon
+                      name={cfg.icon as IconName}
+                      size={11}
+                      color={color.white}
+                    />
                   </View>
-                  <Text style={[s.breakdownLabel, { color: T.textPrimary }]}>
+                  <Text style={[s.breakdownLabel, { color: T.text }]}>
                     {cfg.label}
                   </Text>
-                  <Text style={[s.breakdownCount, { color: T.textPrimary }]}>
+                  <Text style={[s.breakdownCount, { color: T.text }]}>
                     {item.count}
                   </Text>
-                  <Text style={[s.breakdownPct, { color: T.textSecondary }]}>
+                  <Text style={[s.breakdownPct, { color: T.textMuted }]}>
                     {pct}%
                   </Text>
                 </View>
@@ -732,7 +722,7 @@ function InventoryTab({
                 s.listRow,
                 i < lowStockItems.length - 1 && {
                   borderBottomWidth: 1,
-                  borderBottomColor: T.border,
+                  borderBottomColor: T.borderSubtle,
                 },
               ]}
               onPress={() => {
@@ -753,12 +743,12 @@ function InventoryTab({
               />
               <View style={{ flex: 1 }}>
                 <Text
-                  style={[s.listTitle, { color: T.textPrimary }]}
+                  style={[s.listTitle, { color: T.text }]}
                   numberOfLines={1}
                 >
                   {item.products?.name || "Unknown"}
                 </Text>
-                <Text style={[s.listSub, { color: T.textSecondary }]}>
+                <Text style={[s.listSub, { color: T.textMuted }]}>
                   {item.products?.category?.replace("_", "/").toUpperCase()}{" "}
                   {"\u2022"} {item.products?.barcode}
                 </Text>
@@ -800,7 +790,7 @@ function InventoryTab({
                 s.listRow,
                 i < reorderItems.length - 1 && {
                   borderBottomWidth: 1,
-                  borderBottomColor: T.border,
+                  borderBottomColor: T.borderSubtle,
                 },
               ]}
               onPress={() => {
@@ -811,20 +801,17 @@ function InventoryTab({
               }}
               activeOpacity={0.7}
             >
-              <FontAwesome
-                name="exclamation-circle"
-                size={14}
-                color={T.danger}
-                style={{ marginRight: 12 }}
-              />
+              <View style={{ marginRight: 12 }}>
+                <Icon name="alert-circle" size={16} color={T.danger} />
+              </View>
               <View style={{ flex: 1 }}>
                 <Text
-                  style={[s.listTitle, { color: T.textPrimary }]}
+                  style={[s.listTitle, { color: T.text }]}
                   numberOfLines={1}
                 >
                   {item.products?.name}
                 </Text>
-                <Text style={[s.listSub, { color: T.textSecondary }]}>
+                <Text style={[s.listSub, { color: T.textMuted }]}>
                   Current: {item.quantity} {"\u2022"} Reorder at:{" "}
                   {item.products?.reorder_point}
                 </Text>
@@ -854,13 +841,13 @@ function InventoryTab({
                   s.listRow,
                   i < sectionStock.length - 1 && {
                     borderBottomWidth: 1,
-                    borderBottomColor: T.border,
+                    borderBottomColor: T.borderSubtle,
                   },
                 ]}
               >
                 <View style={[s.sectionDot, { backgroundColor: sec.color }]} />
                 <View style={{ flex: 1 }}>
-                  <Text style={[s.listTitle, { color: T.textPrimary }]}>
+                  <Text style={[s.listTitle, { color: T.text }]}>
                     {sec.code} {"\u2014"} {sec.name}
                   </Text>
                   <View style={[s.fillBarBg, { marginTop: 6 }]}>
@@ -881,10 +868,7 @@ function InventoryTab({
                   </View>
                 </View>
                 <Text
-                  style={[
-                    s.fillPct,
-                    { color: pct > 85 ? T.danger : T.textPrimary },
-                  ]}
+                  style={[s.fillPct, { color: pct > 85 ? T.danger : T.text }]}
                 >
                   {pct}%
                 </Text>
@@ -923,7 +907,7 @@ function ActivityTab({
                     style={[
                       s.chartBar,
                       {
-                        backgroundColor: T.primary,
+                        backgroundColor: T.accent,
                         height:
                           maxDailyCount > 0
                             ? `${Math.max(
@@ -935,10 +919,10 @@ function ActivityTab({
                     ]}
                   />
                 </View>
-                <Text style={[s.chartLabel, { color: T.textSecondary }]}>
+                <Text style={[s.chartLabel, { color: T.textMuted }]}>
                   {day.date}
                 </Text>
-                <Text style={[s.chartValue, { color: T.textPrimary }]}>
+                <Text style={[s.chartValue, { color: T.text }]}>
                   {day.count}
                 </Text>
               </View>
@@ -963,17 +947,15 @@ function ActivityTab({
                   s.listRow,
                   i < staffActivity.length - 1 && {
                     borderBottomWidth: 1,
-                    borderBottomColor: T.border,
+                    borderBottomColor: T.borderSubtle,
                   },
                 ]}
               >
-                <View
-                  style={[s.staffAvatar, { backgroundColor: T.primary + "12" }]}
-                >
-                  <FontAwesome name="user" size={12} color={T.primary} />
+                <View style={[s.staffAvatar, { backgroundColor: T.accentDim }]}>
+                  <Icon name="user" size={14} color={T.accent} />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={[s.listTitle, { color: T.textPrimary }]}>
+                  <Text style={[s.listTitle, { color: T.text }]}>
                     {staff.name}
                   </Text>
                   <View style={[s.fillBarBg, { marginTop: 4 }]}>
@@ -981,14 +963,14 @@ function ActivityTab({
                       style={[
                         s.fillBarFill,
                         {
-                          backgroundColor: T.primary,
+                          backgroundColor: T.accent,
                           width: `${(staff.count / maxStaff) * 100}%`,
                         },
                       ]}
                     />
                   </View>
                 </View>
-                <Text style={[s.staffCount, { color: T.textPrimary }]}>
+                <Text style={[s.staffCount, { color: T.text }]}>
                   {staff.count}
                 </Text>
               </View>
@@ -1024,11 +1006,15 @@ function ActivityTab({
               <View key={item.id} style={s.auditRow}>
                 <View style={s.auditTrack}>
                   <View style={[s.auditDot, { backgroundColor: cfg.color }]}>
-                    <FontAwesome name={cfg.icon as any} size={8} color="#FFF" />
+                    <Icon
+                      name={cfg.icon as IconName}
+                      size={11}
+                      color={color.white}
+                    />
                   </View>
                   {!isLast && (
                     <View
-                      style={[s.auditLine, { backgroundColor: T.border }]}
+                      style={[s.auditLine, { backgroundColor: T.borderSubtle }]}
                     />
                   )}
                 </View>
@@ -1042,7 +1028,7 @@ function ActivityTab({
                     }
                   }}
                 >
-                  <Text style={[s.auditProduct, { color: T.textPrimary }]}>
+                  <Text style={[s.auditProduct, { color: T.text }]}>
                     {item.products?.name || "Unknown"}
                   </Text>
                   <View style={s.auditMeta}>
@@ -1056,11 +1042,11 @@ function ActivityTab({
                         {cfg.label}
                       </Text>
                     </View>
-                    <Text style={[s.auditUser, { color: T.textSecondary }]}>
+                    <Text style={[s.auditUser, { color: T.textMuted }]}>
                       {(item.profiles as any)?.full_name || ""}
                     </Text>
                   </View>
-                  <Text style={[s.auditTime, { color: T.textSecondary }]}>
+                  <Text style={[s.auditTime, { color: T.textMuted }]}>
                     {dateStr} {"\u2022"} {timeStr}
                   </Text>
                 </TouchableOpacity>
@@ -1120,7 +1106,7 @@ function OperationsTab({ T, ordersByStatus, posByStatus, returnStats }: any) {
                 s.listRow,
                 i < ordersByStatus.length - 1 && {
                   borderBottomWidth: 1,
-                  borderBottomColor: T.border,
+                  borderBottomColor: T.borderSubtle,
                 },
               ]}
             >
@@ -1134,7 +1120,7 @@ function OperationsTab({ T, ordersByStatus, posByStatus, returnStats }: any) {
                 style={[
                   s.listTitle,
                   {
-                    color: T.textPrimary,
+                    color: T.text,
                     flex: 1,
                     textTransform: "capitalize",
                   },
@@ -1142,10 +1128,10 @@ function OperationsTab({ T, ordersByStatus, posByStatus, returnStats }: any) {
               >
                 {item.status.replace(/_/g, " ")}
               </Text>
-              <Text style={[s.breakdownCount, { color: T.textPrimary }]}>
+              <Text style={[s.breakdownCount, { color: T.text }]}>
                 {item.count}
               </Text>
-              <Text style={[s.breakdownPct, { color: T.textSecondary }]}>
+              <Text style={[s.breakdownPct, { color: T.textMuted }]}>
                 {totalOrders > 0
                   ? Math.round((item.count / totalOrders) * 100)
                   : 0}
@@ -1170,7 +1156,7 @@ function OperationsTab({ T, ordersByStatus, posByStatus, returnStats }: any) {
                 s.listRow,
                 i < posByStatus.length - 1 && {
                   borderBottomWidth: 1,
-                  borderBottomColor: T.border,
+                  borderBottomColor: T.borderSubtle,
                 },
               ]}
             >
@@ -1184,7 +1170,7 @@ function OperationsTab({ T, ordersByStatus, posByStatus, returnStats }: any) {
                 style={[
                   s.listTitle,
                   {
-                    color: T.textPrimary,
+                    color: T.text,
                     flex: 1,
                     textTransform: "capitalize",
                   },
@@ -1192,10 +1178,10 @@ function OperationsTab({ T, ordersByStatus, posByStatus, returnStats }: any) {
               >
                 {item.status.replace(/_/g, " ")}
               </Text>
-              <Text style={[s.breakdownCount, { color: T.textPrimary }]}>
+              <Text style={[s.breakdownCount, { color: T.text }]}>
                 {item.count}
               </Text>
-              <Text style={[s.breakdownPct, { color: T.textSecondary }]}>
+              <Text style={[s.breakdownPct, { color: T.textMuted }]}>
                 {totalPOs > 0 ? Math.round((item.count / totalPOs) * 100) : 0}%
               </Text>
             </View>
@@ -1217,7 +1203,7 @@ function OperationsTab({ T, ordersByStatus, posByStatus, returnStats }: any) {
                 s.listRow,
                 i < returnStats.byDisposition.length - 1 && {
                   borderBottomWidth: 1,
-                  borderBottomColor: T.border,
+                  borderBottomColor: T.borderSubtle,
                 },
               ]}
             >
@@ -1233,7 +1219,7 @@ function OperationsTab({ T, ordersByStatus, posByStatus, returnStats }: any) {
                 style={[
                   s.listTitle,
                   {
-                    color: T.textPrimary,
+                    color: T.text,
                     flex: 1,
                     textTransform: "capitalize",
                   },
@@ -1241,7 +1227,7 @@ function OperationsTab({ T, ordersByStatus, posByStatus, returnStats }: any) {
               >
                 {item.disposition.replace(/_/g, " ")}
               </Text>
-              <Text style={[s.breakdownCount, { color: T.textPrimary }]}>
+              <Text style={[s.breakdownCount, { color: T.text }]}>
                 {item.count}
               </Text>
             </View>
@@ -1258,36 +1244,39 @@ function OperationsTab({ T, ordersByStatus, posByStatus, returnStats }: any) {
 function Card({ T, children }: { T: any; children: React.ReactNode }) {
   return (
     <View
-      style={[s.card, { backgroundColor: T.surface, borderColor: T.border }]}
+      style={[
+        s.card,
+        { backgroundColor: T.bgElevated, borderColor: T.borderSubtle },
+      ]}
     >
       {children}
     </View>
   );
 }
 function SectionTitle({ T, children }: { T: any; children: React.ReactNode }) {
-  return (
-    <Text style={[s.sectionLabel, { color: T.textPrimary }]}>{children}</Text>
-  );
+  return <Text style={[s.sectionLabel, { color: T.text }]}>{children}</Text>;
 }
 function EmptyText({ T, children }: { T: any; children: React.ReactNode }) {
-  return (
-    <Text style={[s.emptyText, { color: T.textSecondary }]}>{children}</Text>
-  );
+  return <Text style={[s.emptyText, { color: T.textMuted }]}>{children}</Text>;
 }
-function StatCard({
-  icon,
+function KpiCell({
+  T,
   label,
   value,
+  tint,
 }: {
-  icon: string;
+  T: any;
   label: string;
   value: number;
+  tint?: string;
 }) {
   return (
-    <View style={s.statCard}>
-      <FontAwesome name={icon as any} size={14} color="rgba(255,255,255,0.7)" />
-      <AnimatedCounter value={value} style={s.statValue} />
-      <Text style={s.statLabel}>{label}</Text>
+    <View style={s.kpiCell}>
+      <AnimatedCounter
+        value={value}
+        style={[s.kpiValue, { color: tint || T.text }]}
+      />
+      <Text style={[s.kpiLabel, { color: T.textMuted }]}>{label}</Text>
     </View>
   );
 }
@@ -1307,15 +1296,15 @@ function BarRow({
   const pct = max > 0 ? (value / max) * 100 : 0;
   return (
     <View style={s.barRow}>
-      <Text style={[s.barLabel, { color: T.textSecondary }]} numberOfLines={1}>
+      <Text style={[s.barLabel, { color: T.textMuted }]} numberOfLines={1}>
         {label}
       </Text>
-      <View style={[s.barBg, { backgroundColor: T.border }]}>
+      <View style={[s.barBg, { backgroundColor: T.borderSubtle }]}>
         <View
           style={[s.barFill, { backgroundColor: color, width: `${pct}%` }]}
         />
       </View>
-      <Text style={[s.barValue, { color: T.textPrimary }]}>{value}</Text>
+      <Text style={[s.barValue, { color: T.text }]}>{value}</Text>
     </View>
   );
 }
@@ -1325,99 +1314,101 @@ function BarRow({
 // ============================================================
 const s = StyleSheet.create({
   screen: { flex: 1 },
-  headerWrap: { position: "absolute", top: 0, left: 0, right: 0, zIndex: 10 },
-  headerGradient: {
+
+  noAccess: {
     flex: 1,
-    paddingHorizontal: 20,
-    paddingBottom: 20,
-    borderBottomLeftRadius: 28,
-    borderBottomRightRadius: 28,
-  },
-  headerTop: {
-    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    paddingTop: STATUS_BAR,
-    marginBottom: 10,
-  },
-  backBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: "rgba(255,255,255,0.15)",
     justifyContent: "center",
-    alignItems: "center",
+    gap: space.s16,
+    paddingHorizontal: space.s40,
   },
-  headerTitle: { fontWeight: "bold", color: "#FFF" },
-  headerSub: { fontSize: 13, color: "rgba(255,255,255,0.5)", marginBottom: 10 },
-  statGrid: { flexDirection: "row", gap: 8 },
-  statCard: {
-    flex: 1,
-    backgroundColor: "rgba(255,255,255,0.1)",
-    borderRadius: 12,
-    padding: 10,
-    alignItems: "center",
-  },
-  statValue: { fontSize: 20, fontWeight: "bold", color: "#FFF", marginTop: 4 },
-  statLabel: { fontSize: 9, color: "rgba(255,255,255,0.5)", marginTop: 2 },
-  body: { paddingHorizontal: 20, paddingTop: 12 },
-  tabBar: { maxHeight: 40, marginBottom: 16 },
-  tab: { marginRight: 8 },
-  tabActive: {
+
+  // KPI strip — flat, hairline-bordered, mono numerals
+  kpiStrip: {
     flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 9,
-    borderRadius: 20,
+    borderTopWidth: layout.hairlineWidth,
+    borderBottomWidth: layout.hairlineWidth,
   },
-  tabTextActive: { fontSize: 13, color: "#FFF", fontWeight: "600" },
-  tabInactive: {
-    paddingHorizontal: 16,
-    paddingVertical: 9,
-    borderRadius: 20,
-    borderWidth: 1,
+  kpiDivider: { width: layout.hairlineWidth },
+  kpiCell: {
+    flex: 1,
+    paddingVertical: space.s16,
+    paddingHorizontal: space.s12,
+    alignItems: "flex-start",
   },
-  tabText: { fontSize: 13 },
-  card: { borderRadius: 14, borderWidth: 1, padding: 16, marginBottom: 16 },
+  kpiValue: {
+    ...type.monoBody,
+    fontSize: 20,
+    lineHeight: 24,
+    fontWeight: "700",
+  },
+  kpiLabel: { ...type.labelSm, marginTop: 4 },
+
+  body: { paddingHorizontal: layout.contentPaddingH, paddingTop: space.s16 },
+
+  // Tabs — label-only, sharp, accent when active
+  tabBar: { maxHeight: 44, marginBottom: space.s16 },
+  tab: {
+    marginRight: space.s8,
+    paddingHorizontal: space.s16,
+    paddingVertical: 9,
+    borderWidth: layout.hairlineWidth,
+    justifyContent: "center",
+  },
+
+  card: {
+    borderWidth: layout.hairlineWidth,
+    padding: space.s16,
+    marginBottom: space.s16,
+  },
   sectionLabel: {
-    fontSize: 14,
-    fontWeight: "bold",
-    marginBottom: 8,
+    ...type.label,
+    marginBottom: space.s8,
     marginLeft: 2,
     marginTop: 4,
   },
-  emptyText: { fontSize: 13, textAlign: "center", paddingVertical: 12 },
+  emptyText: { ...type.body, textAlign: "center", paddingVertical: space.s12 },
 
   // Bar chart rows
-  barRow: { flexDirection: "row", alignItems: "center", marginBottom: 10 },
-  barLabel: { width: 70, fontSize: 12, marginRight: 8 },
-  barBg: { flex: 1, height: 20, borderRadius: 10, overflow: "hidden" },
-  barFill: { height: 20, borderRadius: 10 },
+  barRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: space.s12,
+  },
+  barLabel: { ...type.monoSm, width: 70, marginRight: space.s8 },
+  barBg: { flex: 1, height: 20, overflow: "hidden" },
+  barFill: { height: 20 },
   barValue: {
+    ...type.monoBody,
     width: 32,
     textAlign: "right",
-    fontSize: 14,
-    fontWeight: "bold",
-    marginLeft: 8,
+    marginLeft: space.s8,
   },
 
   // Section stock rows
-  sectionRow: { flexDirection: "row", alignItems: "center", marginBottom: 14 },
-  sectionDot: { width: 10, height: 10, borderRadius: 5, marginRight: 10 },
-  sectionCode: { fontSize: 13, fontWeight: "600", marginBottom: 4 },
-  sectionQty: { fontSize: 16, fontWeight: "bold" },
-  sectionCap: { fontSize: 10, marginTop: 1 },
+  sectionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: space.s12,
+  },
+  sectionDot: {
+    width: 10,
+    height: 10,
+    borderRadius: radius.pill,
+    marginRight: space.s12,
+  },
+  sectionCode: { ...type.bodySm, fontWeight: "600", marginBottom: 4 },
+  sectionQty: { ...type.monoBody, fontSize: 16 },
+  sectionCap: { ...type.labelSm, marginTop: 1 },
   fillBarBg: {
     height: 6,
-    borderRadius: 3,
-    backgroundColor: "rgba(0,0,0,0.06)",
+    backgroundColor: color.whiteAlpha.a1,
     overflow: "hidden",
   },
-  fillBarFill: { height: 6, borderRadius: 3 },
+  fillBarFill: { height: 6 },
   fillPct: {
-    fontSize: 15,
-    fontWeight: "bold",
-    marginLeft: 12,
+    ...type.monoBody,
+    marginLeft: space.s12,
     width: 40,
     textAlign: "right",
   },
@@ -1426,9 +1417,8 @@ const s = StyleSheet.create({
   proportionBar: {
     flexDirection: "row",
     height: 10,
-    borderRadius: 5,
     overflow: "hidden",
-    marginBottom: 16,
+    marginBottom: space.s16,
   },
   proportionSeg: { height: 10 },
 
@@ -1436,59 +1426,72 @@ const s = StyleSheet.create({
   breakdownRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 10,
-    borderBottomWidth: 1,
+    paddingVertical: space.s12,
+    borderBottomWidth: layout.hairlineWidth,
   },
   breakdownDot: {
     width: 22,
     height: 22,
-    borderRadius: 11,
+    borderRadius: radius.pill,
     justifyContent: "center",
     alignItems: "center",
-    marginRight: 10,
+    marginRight: space.s12,
   },
-  breakdownLabel: { fontSize: 14, flex: 1 },
-  breakdownCount: { fontSize: 15, fontWeight: "bold", marginRight: 8 },
-  breakdownPct: { fontSize: 12, width: 32 },
+  breakdownLabel: { ...type.body, flex: 1 },
+  breakdownCount: { ...type.monoBody, marginRight: space.s8 },
+  breakdownPct: { ...type.monoSm, width: 32 },
 
   // List rows
-  listRow: { flexDirection: "row", alignItems: "center", paddingVertical: 12 },
-  listTitle: { fontSize: 14, fontWeight: "600" },
-  listSub: { fontSize: 11, marginTop: 2 },
-  alertDot: { width: 8, height: 8, borderRadius: 4, marginRight: 12 },
-  statusDot: { width: 10, height: 10, borderRadius: 5, marginRight: 12 },
-  qtyBadge: { borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4 },
-  qtyBadgeText: { fontSize: 16, fontWeight: "bold" },
+  listRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: space.s12,
+  },
+  listTitle: { ...type.body, fontWeight: "600" },
+  listSub: { ...type.monoSm, marginTop: 2 },
+  alertDot: {
+    width: 8,
+    height: 8,
+    borderRadius: radius.pill,
+    marginRight: space.s12,
+  },
+  statusDot: {
+    width: 10,
+    height: 10,
+    borderRadius: radius.pill,
+    marginRight: space.s12,
+  },
+  qtyBadge: { paddingHorizontal: space.s8, paddingVertical: 4 },
+  qtyBadgeText: { ...type.monoBody, fontSize: 16 },
 
   // Daily chart
   chartArea: {
     flexDirection: "row",
     justifyContent: "space-between",
-    paddingTop: 8,
+    paddingTop: space.s8,
   },
   chartCol: { alignItems: "center", flex: 1 },
   chartBarWrap: {
     height: 100,
     width: 24,
-    borderRadius: 12,
-    backgroundColor: "rgba(0,0,0,0.04)",
+    backgroundColor: color.whiteAlpha.a1,
     justifyContent: "flex-end",
     overflow: "hidden",
   },
-  chartBar: { width: 24, borderRadius: 12, minHeight: 4 },
-  chartLabel: { fontSize: 10, marginTop: 6 },
-  chartValue: { fontSize: 12, fontWeight: "bold", marginTop: 2 },
+  chartBar: { width: 24, minHeight: 4 },
+  chartLabel: { ...type.labelSm, marginTop: 6 },
+  chartValue: { ...type.monoSm, marginTop: 2 },
 
   // Staff
   staffAvatar: {
     width: 32,
     height: 32,
-    borderRadius: 16,
+    borderRadius: radius.pill,
     justifyContent: "center",
     alignItems: "center",
-    marginRight: 12,
+    marginRight: space.s12,
   },
-  staffCount: { fontSize: 16, fontWeight: "bold", marginLeft: 12 },
+  staffCount: { ...type.monoBody, fontSize: 16, marginLeft: space.s12 },
 
   // Audit trail
   auditRow: { flexDirection: "row", minHeight: 56 },
@@ -1496,22 +1499,21 @@ const s = StyleSheet.create({
   auditDot: {
     width: 22,
     height: 22,
-    borderRadius: 11,
+    borderRadius: radius.pill,
     justifyContent: "center",
     alignItems: "center",
     zIndex: 1,
   },
   auditLine: { flex: 1, width: 1, marginTop: -1 },
-  auditBody: { flex: 1, paddingLeft: 12, paddingBottom: 16 },
-  auditProduct: { fontSize: 14, fontWeight: "600" },
+  auditBody: { flex: 1, paddingLeft: space.s12, paddingBottom: space.s16 },
+  auditProduct: { ...type.body, fontWeight: "600" },
   auditMeta: { flexDirection: "row", alignItems: "center", marginTop: 4 },
   auditChip: {
-    borderRadius: 6,
-    paddingHorizontal: 8,
+    paddingHorizontal: space.s8,
     paddingVertical: 2,
-    marginRight: 8,
+    marginRight: space.s8,
   },
-  auditChipText: { fontSize: 10, fontWeight: "bold" },
-  auditUser: { fontSize: 11 },
-  auditTime: { fontSize: 11, marginTop: 2 },
+  auditChipText: { ...type.labelSm },
+  auditUser: { ...type.monoSm },
+  auditTime: { ...type.monoSm, marginTop: 2 },
 });

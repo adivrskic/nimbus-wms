@@ -6,7 +6,9 @@ const SUPABASE_URL = "https://wbtudewmkomijnrgeuvd.supabase.co";
 const SUPABASE_ANON_KEY =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndidHVkZXdta29taWpucmdldXZkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQyODkyMDMsImV4cCI6MjA4OTg2NTIwM30.pPra_OylHKz0urjj5aISXVeWpbSSyuG75r7aRnokHM4";
 
-export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  db: { schema: "app" },
+});
 
 // Store credentials securely on device for biometric re-login
 const CRED_KEY = "nimbus_wms_creds";

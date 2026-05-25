@@ -47,7 +47,7 @@ import Svg, { G, Rect, Text as SvgText } from "react-native-svg";
 
 import { ScreenHeader } from "../../lib/nimbus/Header";
 import { Icon } from "../../lib/nimbus/Icon";
-import { layout, space, type } from "../../lib/nimbus/tokens";
+import { color, layout, space, type } from "../../lib/nimbus/tokens";
 import { supabase } from "../../lib/supabase";
 import { useTheme } from "../../lib/theme";
 import { haptic } from "../../lib/ui";
@@ -313,7 +313,7 @@ function FloorView({
             const h = s.floor_height * scale;
             const cx = x + w / 2;
             const cy = y + h / 2;
-            const fill = s.color ?? "#d4a853";
+            const fill = s.color ?? color.accent;
             const rotateAttr = s.rotation
               ? `rotate(${s.rotation}, ${cx}, ${cy})`
               : undefined;
@@ -340,7 +340,7 @@ function FloorView({
                 <SvgText
                   x={cx}
                   y={cy}
-                  fill="#ffffff"
+                  fill={color.white}
                   fontSize={fontSize}
                   fontWeight="500"
                   textAnchor="middle"

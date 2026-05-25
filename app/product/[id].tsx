@@ -1,16 +1,13 @@
-import FontAwesome from "@expo/vector-icons/FontAwesome";
 import { decode } from "base64-arraybuffer";
 import * as ImagePicker from "expo-image-picker";
-import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  Animated,
   Image,
   Modal,
-  Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -18,31 +15,16 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { ScreenHeader } from "../../lib/nimbus/Header";
+import { Icon } from "../../lib/nimbus/Icon";
+import { color, layout, radius, space, type } from "../../lib/nimbus/tokens";
 import { useOffline } from "../../lib/offline";
 import { usePermissions } from "../../lib/permissions";
 import { supabase } from "../../lib/supabase";
 import { useTheme } from "../../lib/theme";
 import { Skeleton, haptic } from "../../lib/ui";
 import { useWarehouse } from "../../lib/warehouse";
-
-const STATUS_BAR = Platform.OS === "ios" ? 54 : 36;
-const HEADER_FULL = 260;
-const HEADER_COMPACT = STATUS_BAR + 110;
-const SCROLL_RANGE = 120;
-
-const CATEGORY_ICONS: Record<string, string> = {
-  hardwood: "tree",
-  laminate: "clone",
-  vinyl_lvp: "square",
-  tile: "th",
-  carpet: "ellipsis-h",
-  underlayment: "minus",
-  adhesive: "tint",
-  trim_molding: "minus",
-  tools: "wrench",
-  accessories: "puzzle-piece",
-  other: "cube",
-};
 
 export default function ProductDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -51,7 +33,7 @@ export default function ProductDetailScreen() {
   const { warehouseId } = useWarehouse();
   const perms = usePermissions();
   const { isOnline, queueOperation } = useOffline();
-  const scrollY = useRef(new Animated.Value(0)).current;
+  const insets = useSafeAreaInsets();
   const [product, setProduct] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [history, setHistory] = useState<any[]>([]);
@@ -407,36 +389,47 @@ export default function ProductDetailScreen() {
 
   if (loading)
     return (
-      <View style={[s.screen, { backgroundColor: T.background }]}>
-        <View style={{ paddingTop: STATUS_BAR + 20, paddingHorizontal: 20 }}>
+      <View style={[s.screen, { backgroundColor: T.bg }]}>
+        <ScreenHeader
+          title="Product"
+          leading={
+            <Pressable
+              onPress={() => router.back()}
+              hitSlop={10}
+              accessibilityLabel="Back"
+            >
+              <Icon name="arrow-left" size={18} color={T.text} />
+            </Pressable>
+          }
+        />
+        <View
+          style={{
+            paddingTop: space.s20,
+            paddingHorizontal: layout.contentPaddingH,
+          }}
+        >
           <Skeleton width="40%" height={18} style={{ marginBottom: 10 }} />
           <Skeleton width="80%" height={26} style={{ marginBottom: 8 }} />
           <Skeleton width="50%" height={14} style={{ marginBottom: 24 }} />
-          <Skeleton width="100%" height={100} borderRadius={14} />
+          <Skeleton width="100%" height={100} borderRadius={0} />
         </View>
       </View>
     );
 
   if (!product)
     return (
-      <View style={[s.centered, { backgroundColor: T.background }]}>
+      <View style={[s.centered, { backgroundColor: T.bg }]}>
         <View
           style={[
             s.emptyCircle,
-            { backgroundColor: T.surface, borderColor: T.border },
+            { backgroundColor: T.bgElevated, borderColor: T.borderSubtle },
           ]}
         >
-          <FontAwesome
-            name="exclamation-triangle"
-            size={28}
-            color={T.textSecondary}
-          />
+          <Icon name="alert-circle" size={28} color={T.textMuted} />
         </View>
-        <Text style={[s.emptyTitle, { color: T.textPrimary }]}>
-          Product not found
-        </Text>
+        <Text style={[s.emptyTitle, { color: T.text }]}>Product not found</Text>
         <TouchableOpacity onPress={() => router.back()} style={s.backLink}>
-          <Text style={[s.backLinkText, { color: T.primary }]}>Go back</Text>
+          <Text style={[type.label, { color: T.accent }]}>Go back</Text>
         </TouchableOpacity>
       </View>
     );
@@ -446,8 +439,7 @@ export default function ProductDetailScreen() {
   const categoryLabel = (product.category || "")
     .replace("_", "/")
     .toUpperCase();
-  const categoryIcon = CATEGORY_ICONS[product.category] || "cube";
-  const sectionColor = primaryLocation?.sections?.color || T.primary;
+  const sectionColor = primaryLocation?.sections?.color || color.accent;
   const totalQty = locations.reduce(
     (sum: number, loc: any) => sum + (loc.quantity || 0),
     0
@@ -464,141 +456,82 @@ export default function ProductDetailScreen() {
     adjust: "Adjusted",
   };
 
-  // Header animations
-  const headerHeight = scrollY.interpolate({
-    inputRange: [0, SCROLL_RANGE],
-    outputRange: [HEADER_FULL, HEADER_COMPACT],
-    extrapolate: "clamp",
-  });
-  const detailsOpacity = scrollY.interpolate({
-    inputRange: [0, SCROLL_RANGE * 0.3],
-    outputRange: [1, 0],
-    extrapolate: "clamp",
-  });
-  const statsHeight = scrollY.interpolate({
-    inputRange: [0, SCROLL_RANGE * 0.6],
-    outputRange: [90, 0],
-    extrapolate: "clamp",
-  });
-  const statsOpacity = scrollY.interpolate({
-    inputRange: [0, SCROLL_RANGE * 0.4],
-    outputRange: [1, 0],
-    extrapolate: "clamp",
-  });
-  const nameFontSize = scrollY.interpolate({
-    inputRange: [0, SCROLL_RANGE],
-    outputRange: [24, 17],
-    extrapolate: "clamp",
-  });
-
   return (
-    <View style={[s.screen, { backgroundColor: T.background }]}>
-      {/* Fixed header */}
-      <Animated.View style={[s.headerWrap, { height: headerHeight }]}>
-        <LinearGradient
-          colors={[sectionColor, T.secondary]}
-          start={{ x: 0.5, y: 0 }}
-          end={{ x: 0.5, y: 1 }}
-          style={s.headerGradient}
-        >
-          <View style={s.headerTop}>
-            <TouchableOpacity onPress={() => router.back()} style={s.backBtn}>
-              <FontAwesome name="arrow-left" size={16} color="#FFF" />
-            </TouchableOpacity>
-            <View style={s.headerBadge}>
-              <FontAwesome
-                name={categoryIcon as any}
-                size={10}
-                color="#FFF"
-                style={{ marginRight: 5 }}
-              />
-              <Text style={s.headerBadgeText}>{categoryLabel}</Text>
-            </View>
-          </View>
-
-          <Animated.Text
-            style={[s.headerName, { fontSize: nameFontSize }]}
-            numberOfLines={1}
+    <View style={[s.screen, { backgroundColor: T.bg }]}>
+      <ScreenHeader
+        eyebrow={categoryLabel || undefined}
+        title={product.name}
+        leading={
+          <Pressable
+            onPress={() => router.back()}
+            hitSlop={10}
+            accessibilityLabel="Back"
           >
-            {product.name}
-          </Animated.Text>
+            <Icon name="arrow-left" size={18} color={T.text} />
+          </Pressable>
+        }
+        trailing={
+          perms.canEditProducts ? (
+            <Pressable
+              onPress={openEdit}
+              hitSlop={10}
+              accessibilityLabel="Edit product"
+            >
+              <Icon name="pencil" size={18} color={T.accent} />
+            </Pressable>
+          ) : undefined
+        }
+      />
 
-          <View style={s.headerBarcode}>
-            <FontAwesome
-              name="barcode"
-              size={12}
-              color="rgba(255,255,255,0.5)"
-            />
-            <Text style={s.headerBarcodeText}>{product.barcode}</Text>
-          </View>
-
-          <Animated.View
-            style={{
-              opacity: statsOpacity,
-              height: statsHeight,
-              overflow: "hidden",
-            }}
-          >
-            {locations.length > 0 ? (
-              <View style={s.headerStats}>
-                <View style={s.headerStat}>
-                  <Text style={s.headerStatNum}>{locations.length}</Text>
-                  <Text style={s.headerStatLabel}>
-                    {locations.length === 1 ? "Location" : "Locations"}
-                  </Text>
-                </View>
-                <View style={s.headerStatDiv} />
-                <View style={s.headerStat}>
-                  <Text style={s.headerStatNum}>
-                    {primaryLocation.sections?.code}
-                  </Text>
-                  <Text style={s.headerStatLabel}>Primary</Text>
-                </View>
-                <View style={s.headerStatDiv} />
-                <View style={s.headerStat}>
-                  <Text
-                    style={[
-                      s.headerStatNum,
-                      isLowStock && { color: "#FFCDD2" },
-                    ]}
-                  >
-                    {totalQty}
-                  </Text>
-                  <Text style={s.headerStatLabel}>Total Qty</Text>
-                </View>
-              </View>
-            ) : (
-              <Text
-                style={{
-                  color: "rgba(255,255,255,0.5)",
-                  fontSize: 13,
-                  marginTop: 10,
-                }}
-              >
-                No location assigned
-              </Text>
-            )}
-          </Animated.View>
-        </LinearGradient>
-      </Animated.View>
-
-      {/* Scrollable content behind header */}
-      <Animated.ScrollView
+      <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingTop: HEADER_FULL, paddingBottom: 120 }}
-        onScroll={Animated.event(
-          [{ nativeEvent: { contentOffset: { y: scrollY } } }],
-          { useNativeDriver: false }
-        )}
-        scrollEventThrottle={16}
+        contentContainerStyle={{ paddingBottom: space.s40 + insets.bottom }}
       >
+        {/* Barcode */}
+        <View style={[s.barcodeRow, { borderBottomColor: T.borderSubtle }]}>
+          <Icon name="barcode" size={14} color={T.textDim} />
+          <Text
+            style={[type.monoSm, { color: T.textMuted, marginLeft: space.s8 }]}
+          >
+            {product.barcode}
+          </Text>
+        </View>
+
+        {/* KPI strip */}
+        <View style={[s.kpiStrip, { borderBottomColor: T.borderSubtle }]}>
+          <View style={s.kpiCell}>
+            <Text style={[s.kpiValue, { color: T.text }]}>
+              {locations.length}
+            </Text>
+            <Text style={[s.kpiLabel, { color: T.textMuted }]}>
+              {locations.length === 1 ? "Location" : "Locations"}
+            </Text>
+          </View>
+          <View style={[s.kpiDivider, { backgroundColor: T.borderSubtle }]} />
+          <View style={s.kpiCell}>
+            <Text style={[s.kpiValue, { color: T.text }]} numberOfLines={1}>
+              {primaryLocation?.sections?.code || "\u2014"}
+            </Text>
+            <Text style={[s.kpiLabel, { color: T.textMuted }]}>Primary</Text>
+          </View>
+          <View style={[s.kpiDivider, { backgroundColor: T.borderSubtle }]} />
+          <View style={s.kpiCell}>
+            <Text
+              style={[s.kpiValue, { color: isLowStock ? T.warning : T.text }]}
+            >
+              {totalQty}
+            </Text>
+            <Text style={[s.kpiLabel, { color: T.textMuted }]}>Total Qty</Text>
+          </View>
+        </View>
+
         <View style={s.body}>
           {/* Product photo */}
           {product.photo_url ? (
             <TouchableOpacity
               style={[
                 s.photoCard,
-                { backgroundColor: T.surface, borderColor: T.border },
+                { backgroundColor: T.bgElevated, borderColor: T.borderSubtle },
               ]}
               activeOpacity={0.8}
               onPress={() => {
@@ -615,14 +548,14 @@ export default function ProductDetailScreen() {
                 resizeMode="cover"
               />
               <View style={s.photoOverlay}>
-                <FontAwesome name="camera" size={12} color="#FFF" />
+                <Icon name="camera" size={14} color={color.white} />
               </View>
             </TouchableOpacity>
           ) : (
             <TouchableOpacity
               style={[
                 s.addPhotoCard,
-                { backgroundColor: T.surface, borderColor: T.border },
+                { backgroundColor: T.bgElevated, borderColor: T.borderSubtle },
               ]}
               activeOpacity={0.7}
               onPress={() => {
@@ -633,8 +566,8 @@ export default function ProductDetailScreen() {
                 ]);
               }}
             >
-              <FontAwesome name="camera" size={20} color={T.textSecondary} />
-              <Text style={[s.addPhotoText, { color: T.textSecondary }]}>
+              <Icon name="camera" size={22} color={T.textMuted} />
+              <Text style={[s.addPhotoText, { color: T.textMuted }]}>
                 Add product photo
               </Text>
             </TouchableOpacity>
@@ -646,14 +579,17 @@ export default function ProductDetailScreen() {
                 key={loc.id}
                 style={[
                   s.locationCard,
-                  { backgroundColor: T.surface, borderColor: T.border },
+                  {
+                    backgroundColor: T.bgElevated,
+                    borderColor: T.borderSubtle,
+                  },
                 ]}
               >
                 <View
                   style={[
                     s.locationAccent,
                     {
-                      backgroundColor: loc.sections?.color || T.primary,
+                      backgroundColor: loc.sections?.color || T.accent,
                     },
                   ]}
                 />
@@ -662,10 +598,10 @@ export default function ProductDetailScreen() {
                   activeOpacity={0.8}
                   onPress={() => openRelocate(idx)}
                 >
-                  <Text style={[s.locationTitle, { color: T.textPrimary }]}>
+                  <Text style={[s.locationTitle, { color: T.text }]}>
                     {loc.sections?.code} {"\u2014"} {loc.sections?.name}
                   </Text>
-                  <Text style={[s.locationSub, { color: T.textSecondary }]}>
+                  <Text style={[s.locationSub, { color: T.textMuted }]}>
                     Bay {loc.bay}, Level {loc.level}
                   </Text>
                 </TouchableOpacity>
@@ -673,44 +609,34 @@ export default function ProductDetailScreen() {
                   <TouchableOpacity
                     style={[
                       s.qtyBtn,
-                      { backgroundColor: T.background, borderColor: T.border },
+                      {
+                        backgroundColor: T.surface2,
+                        borderColor: T.borderSubtle,
+                      },
                     ]}
                     onPress={() => adjustQuantity(loc.id, -1)}
                   >
-                    <FontAwesome
-                      name="minus"
-                      size={10}
-                      color={T.textSecondary}
-                    />
+                    <Icon name="minus" size={14} color={T.textMuted} />
                   </TouchableOpacity>
-                  <Text style={[s.qtyDisplay, { color: T.textPrimary }]}>
+                  <Text style={[s.qtyDisplay, { color: T.text }]}>
                     {loc.quantity}
                   </Text>
                   <TouchableOpacity
                     style={[
                       s.qtyBtn,
-                      {
-                        backgroundColor: T.primary + "12",
-                        borderColor: T.primary + "30",
-                      },
+                      { backgroundColor: T.accentDim, borderColor: T.accent },
                     ]}
                     onPress={() => adjustQuantity(loc.id, 1)}
                   >
-                    <FontAwesome name="plus" size={10} color={T.primary} />
+                    <Icon name="plus" size={14} color={T.accent} />
                   </TouchableOpacity>
                 </View>
               </View>
             ))}
 
           {isLowStock && (
-            <View
-              style={[s.lowStockBanner, { backgroundColor: T.danger + "10" }]}
-            >
-              <FontAwesome
-                name="exclamation-triangle"
-                size={13}
-                color={T.danger}
-              />
+            <View style={[s.lowStockBanner, { backgroundColor: T.dangerDim }]}>
+              <Icon name="alert-circle" size={14} color={T.danger} />
               <Text style={[s.lowStockText, { color: T.danger }]}>
                 Low stock — only {totalQty} unit{totalQty !== 1 ? "s" : ""}{" "}
                 remaining
@@ -718,13 +644,11 @@ export default function ProductDetailScreen() {
             </View>
           )}
 
-          <Text style={[s.sectionLabel, { color: T.textSecondary }]}>
-            Details
-          </Text>
+          <Text style={[s.sectionLabel, { color: T.textMuted }]}>Details</Text>
           <View
             style={[
               s.card,
-              { backgroundColor: T.surface, borderColor: T.border },
+              { backgroundColor: T.bgElevated, borderColor: T.borderSubtle },
             ]}
           >
             <DetailRow
@@ -768,18 +692,16 @@ export default function ProductDetailScreen() {
             ) : null}
           </View>
 
-          <Text style={[s.sectionLabel, { color: T.textSecondary }]}>
-            Activity
-          </Text>
+          <Text style={[s.sectionLabel, { color: T.textMuted }]}>Activity</Text>
           {history.length === 0 ? (
             <View
               style={[
                 s.emptyCard,
-                { backgroundColor: T.surface, borderColor: T.border },
+                { backgroundColor: T.bgElevated, borderColor: T.borderSubtle },
               ]}
             >
-              <FontAwesome name="clock-o" size={22} color={T.textSecondary} />
-              <Text style={[s.emptyCardText, { color: T.textSecondary }]}>
+              <Icon name="clipboard-list" size={22} color={T.textMuted} />
+              <Text style={[s.emptyCardText, { color: T.textMuted }]}>
                 No activity recorded
               </Text>
             </View>
@@ -787,7 +709,7 @@ export default function ProductDetailScreen() {
             <View
               style={[
                 s.card,
-                { backgroundColor: T.surface, borderColor: T.border },
+                { backgroundColor: T.bgElevated, borderColor: T.borderSubtle },
               ]}
             >
               {history.map((item, index) => {
@@ -806,31 +728,32 @@ export default function ProductDetailScreen() {
                   <View key={item.id} style={s.historyItem}>
                     <View style={s.historyTrack}>
                       <View
-                        style={[s.historyDot, { backgroundColor: T.primary }]}
+                        style={[s.historyDot, { backgroundColor: T.accent }]}
                       />
                       {!isLast && (
                         <View
-                          style={[s.historyLine, { backgroundColor: T.border }]}
+                          style={[
+                            s.historyLine,
+                            { backgroundColor: T.borderSubtle },
+                          ]}
                         />
                       )}
                     </View>
                     <View
                       style={[s.historyBody, isLast && { paddingBottom: 0 }]}
                     >
-                      <Text style={[s.historyAction, { color: T.primary }]}>
+                      <Text style={[s.historyAction, { color: T.accent }]}>
                         {label}
                       </Text>
                       {item.to_location ? (
-                        <Text
-                          style={[s.historyLocation, { color: T.textPrimary }]}
-                        >
+                        <Text style={[s.historyLocation, { color: T.text }]}>
                           {item.from_location
                             ? `${item.from_location} \u2192 `
                             : ""}
                           {item.to_location}
                         </Text>
                       ) : null}
-                      <Text style={[s.historyTime, { color: T.textSecondary }]}>
+                      <Text style={[s.historyTime, { color: T.textMuted }]}>
                         {dateStr} {"\u2022"} {timeStr}
                       </Text>
                     </View>
@@ -844,71 +767,40 @@ export default function ProductDetailScreen() {
             <View
               style={[
                 s.dateItem,
-                { backgroundColor: T.surface, borderColor: T.border },
+                { backgroundColor: T.bgElevated, borderColor: T.borderSubtle },
               ]}
             >
-              <Text style={[s.dateLabel, { color: T.textSecondary }]}>
-                Added
-              </Text>
-              <Text style={[s.dateValue, { color: T.textPrimary }]}>
+              <Text style={[s.dateLabel, { color: T.textMuted }]}>Added</Text>
+              <Text style={[s.dateValue, { color: T.text }]}>
                 {new Date(product.created_at).toLocaleDateString()}
               </Text>
             </View>
             <View
               style={[
                 s.dateItem,
-                { backgroundColor: T.surface, borderColor: T.border },
+                { backgroundColor: T.bgElevated, borderColor: T.borderSubtle },
               ]}
             >
-              <Text style={[s.dateLabel, { color: T.textSecondary }]}>
-                Updated
-              </Text>
-              <Text style={[s.dateValue, { color: T.textPrimary }]}>
+              <Text style={[s.dateLabel, { color: T.textMuted }]}>Updated</Text>
+              <Text style={[s.dateValue, { color: T.text }]}>
                 {new Date(product.updated_at).toLocaleDateString()}
               </Text>
             </View>
           </View>
 
-          <Text
-            style={[s.sectionLabel, { color: T.textSecondary, marginTop: 4 }]}
-          >
+          <Text style={[s.sectionLabel, { color: T.textMuted, marginTop: 4 }]}>
             Actions
           </Text>
           <View style={s.actionRow}>
-            {perms.canEditProducts && (
-              <TouchableOpacity
-                activeOpacity={0.85}
-                onPress={openEdit}
-                style={[
-                  s.actionBtn,
-                  { backgroundColor: T.surface, borderColor: T.border },
-                ]}
-              >
-                <FontAwesome name="pencil" size={15} color={T.primary} />
-                <Text style={[s.actionBtnText, { color: T.primary }]}>
-                  Edit
-                </Text>
-              </TouchableOpacity>
-            )}
             <TouchableOpacity
               activeOpacity={0.85}
               onPress={() => openRelocate(0)}
-              style={{ flex: 1 }}
+              style={[s.relocateBtn, { backgroundColor: T.accent }]}
             >
-              <LinearGradient
-                colors={[T.secondary, "#0f2240"]}
-                start={{ x: 0.5, y: 0 }}
-                end={{ x: 0.5, y: 1 }}
-                style={s.relocateBtn}
-              >
-                <FontAwesome
-                  name="arrows"
-                  size={15}
-                  color="#FFF"
-                  style={{ marginRight: 8 }}
-                />
-                <Text style={s.relocateBtnText}>Relocate</Text>
-              </LinearGradient>
+              <Icon name="move" size={16} color={color.black} />
+              <Text style={[s.relocateBtnText, { color: color.black }]}>
+                Relocate
+              </Text>
             </TouchableOpacity>
             {perms.canDeleteProducts && (
               <TouchableOpacity
@@ -916,13 +808,10 @@ export default function ProductDetailScreen() {
                 onPress={handleDelete}
                 style={[
                   s.actionBtn,
-                  {
-                    backgroundColor: T.danger + "08",
-                    borderColor: T.danger + "20",
-                  },
+                  { backgroundColor: T.dangerDim, borderColor: T.danger },
                 ]}
               >
-                <FontAwesome name="trash-o" size={15} color={T.danger} />
+                <Icon name="trash" size={15} color={T.danger} />
                 <Text style={[s.actionBtnText, { color: T.danger }]}>
                   Delete
                 </Text>
@@ -930,7 +819,7 @@ export default function ProductDetailScreen() {
             )}
           </View>
         </View>
-      </Animated.ScrollView>
+      </ScrollView>
 
       {/* Relocate Modal */}
       <Modal
@@ -938,45 +827,46 @@ export default function ProductDetailScreen() {
         animationType="slide"
         presentationStyle="pageSheet"
       >
-        <View style={[s.modalScreen, { backgroundColor: T.background }]}>
-          <LinearGradient
-            colors={[selectedSection?.color || T.primary, T.secondary]}
-            start={{ x: 0.5, y: 0 }}
-            end={{ x: 0.5, y: 1 }}
-            style={s.modalHeader}
-          >
-            <View style={s.modalHandle} />
+        <View style={[s.modalScreen, { backgroundColor: T.bg }]}>
+          <View style={[s.modalHeader, { borderBottomColor: T.borderSubtle }]}>
+            <View
+              style={[s.modalHandle, { backgroundColor: T.borderSubtle }]}
+            />
             <View style={s.modalHeaderRow}>
               <TouchableOpacity
                 onPress={() => setShowRelocate(false)}
                 style={s.modalCloseBtn}
+                hitSlop={8}
               >
-                <FontAwesome
-                  name="times"
-                  size={16}
-                  color="rgba(255,255,255,0.6)"
-                />
+                <Icon name="x" size={18} color={T.textMuted} />
               </TouchableOpacity>
               <View style={{ flex: 1 }}>
-                <Text style={s.modalHeaderSub}>Relocate</Text>
-                <Text style={s.modalHeaderTitle}>{product.name}</Text>
+                <Text style={[s.modalHeaderSub, { color: T.textMuted }]}>
+                  Relocate
+                </Text>
+                <Text
+                  style={[s.modalHeaderTitle, { color: T.text }]}
+                  numberOfLines={1}
+                >
+                  {product.name}
+                </Text>
               </View>
             </View>
-          </LinearGradient>
+          </View>
 
           <ScrollView style={s.modalBody} showsVerticalScrollIndicator={false}>
-            <Text style={[s.fieldLabel, { color: T.textSecondary }]}>
-              Section
-            </Text>
+            <Text style={[s.fieldLabel, { color: T.textMuted }]}>Section</Text>
             {sections.map((sec) => (
               <TouchableOpacity
                 key={sec.id}
                 style={[
                   s.sectionOption,
                   {
-                    backgroundColor: T.surface,
+                    backgroundColor: T.bgElevated,
                     borderColor:
-                      selectedSection?.id === sec.id ? T.primary : T.border,
+                      selectedSection?.id === sec.id
+                        ? T.accent
+                        : T.borderSubtle,
                   },
                 ]}
                 onPress={() => {
@@ -990,7 +880,7 @@ export default function ProductDetailScreen() {
                 <View
                   style={[
                     s.sectionColorBar,
-                    { backgroundColor: sec.color || T.primary },
+                    { backgroundColor: sec.color || T.accent },
                   ]}
                 />
                 <View style={{ flex: 1 }}>
@@ -999,9 +889,7 @@ export default function ProductDetailScreen() {
                       s.sectionOptionText,
                       {
                         color:
-                          selectedSection?.id === sec.id
-                            ? T.primary
-                            : T.textPrimary,
+                          selectedSection?.id === sec.id ? T.accent : T.text,
                       },
                       selectedSection?.id === sec.id && { fontWeight: "700" },
                     ]}
@@ -1010,14 +898,14 @@ export default function ProductDetailScreen() {
                   </Text>
                 </View>
                 {selectedSection?.id === sec.id && (
-                  <View style={[s.checkCircle, { backgroundColor: T.primary }]}>
-                    <FontAwesome name="check" size={10} color="#FFF" />
+                  <View style={[s.checkCircle, { backgroundColor: T.accent }]}>
+                    <Icon name="check" size={12} color={color.black} />
                   </View>
                 )}
               </TouchableOpacity>
             ))}
 
-            <Text style={[s.fieldLabel, { color: T.textSecondary }]}>Bay</Text>
+            <Text style={[s.fieldLabel, { color: T.textMuted }]}>Bay</Text>
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
@@ -1034,9 +922,9 @@ export default function ProductDetailScreen() {
                         s.numBtn,
                         {
                           backgroundColor:
-                            selectedBay === num ? T.primary : T.surface,
+                            selectedBay === num ? T.accent : T.bgElevated,
                           borderColor:
-                            selectedBay === num ? T.primary : T.border,
+                            selectedBay === num ? T.accent : T.borderSubtle,
                         },
                       ]}
                       onPress={() => {
@@ -1048,7 +936,7 @@ export default function ProductDetailScreen() {
                         style={[
                           s.numBtnText,
                           {
-                            color: selectedBay === num ? "#FFF" : T.textPrimary,
+                            color: selectedBay === num ? color.black : T.text,
                           },
                         ]}
                       >
@@ -1060,9 +948,7 @@ export default function ProductDetailScreen() {
               )}
             </ScrollView>
 
-            <Text style={[s.fieldLabel, { color: T.textSecondary }]}>
-              Level
-            </Text>
+            <Text style={[s.fieldLabel, { color: T.textMuted }]}>Level</Text>
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
@@ -1079,9 +965,9 @@ export default function ProductDetailScreen() {
                         s.numBtn,
                         {
                           backgroundColor:
-                            selectedLevel === num ? T.primary : T.surface,
+                            selectedLevel === num ? T.accent : T.bgElevated,
                           borderColor:
-                            selectedLevel === num ? T.primary : T.border,
+                            selectedLevel === num ? T.accent : T.borderSubtle,
                         },
                       ]}
                       onPress={() => {
@@ -1093,8 +979,7 @@ export default function ProductDetailScreen() {
                         style={[
                           s.numBtnText,
                           {
-                            color:
-                              selectedLevel === num ? "#FFF" : T.textPrimary,
+                            color: selectedLevel === num ? color.black : T.text,
                           },
                         ]}
                       >
@@ -1112,29 +997,19 @@ export default function ProductDetailScreen() {
               disabled={relocating}
               style={{ marginTop: 24 }}
             >
-              <LinearGradient
-                colors={[selectedSection?.color || T.primary, T.secondary]}
-                start={{ x: 0.5, y: 0 }}
-                end={{ x: 0.5, y: 1 }}
-                style={s.confirmBtn}
-              >
+              <View style={[s.confirmBtn, { backgroundColor: T.accent }]}>
                 {relocating ? (
-                  <ActivityIndicator color="#FFF" />
+                  <ActivityIndicator color={color.black} />
                 ) : (
                   <>
-                    <FontAwesome
-                      name="check-circle"
-                      size={16}
-                      color="#FFF"
-                      style={{ marginRight: 8 }}
-                    />
-                    <Text style={s.confirmBtnText}>
+                    <Icon name="check" size={16} color={color.black} />
+                    <Text style={[s.confirmBtnText, { color: color.black }]}>
                       Move to {selectedSection?.code}-Bay{selectedBay}-L
                       {selectedLevel}
                     </Text>
                   </>
                 )}
-              </LinearGradient>
+              </View>
             </TouchableOpacity>
             <View style={{ height: 40 }} />
           </ScrollView>
@@ -1147,80 +1022,78 @@ export default function ProductDetailScreen() {
         animationType="slide"
         presentationStyle="pageSheet"
       >
-        <View style={[s.modalScreen, { backgroundColor: T.background }]}>
-          <LinearGradient
-            colors={[sectionColor, T.secondary]}
-            start={{ x: 0.5, y: 0 }}
-            end={{ x: 0.5, y: 1 }}
-            style={s.modalHeader}
-          >
-            <View style={s.modalHandle} />
+        <View style={[s.modalScreen, { backgroundColor: T.bg }]}>
+          <View style={[s.modalHeader, { borderBottomColor: T.borderSubtle }]}>
+            <View
+              style={[s.modalHandle, { backgroundColor: T.borderSubtle }]}
+            />
             <View style={s.modalHeaderRow}>
               <TouchableOpacity
                 onPress={() => setShowEdit(false)}
                 style={s.modalCloseBtn}
+                hitSlop={8}
               >
-                <FontAwesome
-                  name="times"
-                  size={16}
-                  color="rgba(255,255,255,0.6)"
-                />
+                <Icon name="x" size={18} color={T.textMuted} />
               </TouchableOpacity>
               <View style={{ flex: 1 }}>
-                <Text style={s.modalHeaderSub}>Edit</Text>
-                <Text style={s.modalHeaderTitle}>{product.name}</Text>
+                <Text style={[s.modalHeaderSub, { color: T.textMuted }]}>
+                  Edit
+                </Text>
+                <Text
+                  style={[s.modalHeaderTitle, { color: T.text }]}
+                  numberOfLines={1}
+                >
+                  {product.name}
+                </Text>
               </View>
             </View>
-          </LinearGradient>
+          </View>
 
           <ScrollView
             style={s.modalBody}
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
           >
-            <Text style={[s.fieldLabel, { color: T.textSecondary }]}>
+            <Text style={[s.fieldLabel, { color: T.textMuted }]}>
               Product name *
             </Text>
             <TextInput
               style={[
                 s.editInput,
                 {
-                  backgroundColor: T.surface,
-                  borderColor: T.borderInput,
-                  color: T.textPrimary,
+                  backgroundColor: T.bgElevated,
+                  borderColor: T.borderSubtle,
+                  color: T.text,
                 },
               ]}
               value={editName}
               onChangeText={setEditName}
               placeholder="Product name"
-              placeholderTextColor={T.textSecondary}
+              placeholderTextColor={T.textMuted}
             />
 
-            <Text style={[s.fieldLabel, { color: T.textSecondary }]}>
-              Category
-            </Text>
+            <Text style={[s.fieldLabel, { color: T.textMuted }]}>Category</Text>
             <TouchableOpacity
               style={[
                 s.editPicker,
-                { backgroundColor: T.surface, borderColor: T.borderInput },
+                { backgroundColor: T.bgElevated, borderColor: T.borderSubtle },
               ]}
               onPress={() => setShowCategoryPicker(!showCategoryPicker)}
             >
-              <Text style={[s.editPickerText, { color: T.textPrimary }]}>
+              <Text style={[s.editPickerText, { color: T.text }]}>
                 {CATEGORIES.find((c) => c.value === editCategory)?.label ||
                   editCategory}
               </Text>
-              <FontAwesome
-                name="chevron-down"
-                size={12}
-                color={T.textSecondary}
-              />
+              <Icon name="chevron-down" size={14} color={T.textMuted} />
             </TouchableOpacity>
             {showCategoryPicker && (
               <View
                 style={[
                   s.editDropdown,
-                  { backgroundColor: T.surface, borderColor: T.borderInput },
+                  {
+                    backgroundColor: T.bgElevated,
+                    borderColor: T.borderSubtle,
+                  },
                 ]}
               >
                 {CATEGORIES.map((c) => (
@@ -1228,9 +1101,9 @@ export default function ProductDetailScreen() {
                     key={c.value}
                     style={[
                       s.editDropdownItem,
-                      { borderBottomColor: T.border },
+                      { borderBottomColor: T.borderFaint },
                       c.value === editCategory && {
-                        backgroundColor: T.primary + "08",
+                        backgroundColor: T.accentDim,
                       },
                     ]}
                     onPress={() => {
@@ -1242,9 +1115,9 @@ export default function ProductDetailScreen() {
                     <Text
                       style={[
                         s.editDropdownText,
-                        { color: T.textPrimary },
+                        { color: T.text },
                         c.value === editCategory && {
-                          color: T.primary,
+                          color: T.accent,
                           fontWeight: "600",
                         },
                       ]}
@@ -1258,92 +1131,90 @@ export default function ProductDetailScreen() {
 
             <View style={{ flexDirection: "row" }}>
               <View style={{ flex: 1, marginRight: 6 }}>
-                <Text style={[s.fieldLabel, { color: T.textSecondary }]}>
+                <Text style={[s.fieldLabel, { color: T.textMuted }]}>
                   Weight
                 </Text>
                 <TextInput
                   style={[
                     s.editInput,
                     {
-                      backgroundColor: T.surface,
-                      borderColor: T.borderInput,
-                      color: T.textPrimary,
+                      backgroundColor: T.bgElevated,
+                      borderColor: T.borderSubtle,
+                      color: T.text,
                     },
                   ]}
                   value={editWeight}
                   onChangeText={setEditWeight}
                   placeholder="e.g. 45 lbs"
-                  placeholderTextColor={T.textSecondary}
+                  placeholderTextColor={T.textMuted}
                 />
               </View>
               <View style={{ flex: 1, marginLeft: 6 }}>
-                <Text style={[s.fieldLabel, { color: T.textSecondary }]}>
+                <Text style={[s.fieldLabel, { color: T.textMuted }]}>
                   Dimensions
                 </Text>
                 <TextInput
                   style={[
                     s.editInput,
                     {
-                      backgroundColor: T.surface,
-                      borderColor: T.borderInput,
-                      color: T.textPrimary,
+                      backgroundColor: T.bgElevated,
+                      borderColor: T.borderSubtle,
+                      color: T.text,
                     },
                   ]}
                   value={editDimensions}
                   onChangeText={setEditDimensions}
                   placeholder='e.g. 48"x6"'
-                  placeholderTextColor={T.textSecondary}
+                  placeholderTextColor={T.textMuted}
                 />
               </View>
             </View>
 
-            <Text style={[s.fieldLabel, { color: T.textSecondary }]}>
+            <Text style={[s.fieldLabel, { color: T.textMuted }]}>
               Manufacturer
             </Text>
             <TextInput
               style={[
                 s.editInput,
                 {
-                  backgroundColor: T.surface,
-                  borderColor: T.borderInput,
-                  color: T.textPrimary,
+                  backgroundColor: T.bgElevated,
+                  borderColor: T.borderSubtle,
+                  color: T.text,
                 },
               ]}
               value={editManufacturer}
               onChangeText={setEditManufacturer}
               placeholder="Manufacturer name"
-              placeholderTextColor={T.textSecondary}
+              placeholderTextColor={T.textMuted}
             />
 
-            <Text style={[s.fieldLabel, { color: T.textSecondary }]}>
+            <Text style={[s.fieldLabel, { color: T.textMuted }]}>
               Reorder point
             </Text>
             <TextInput
               style={[
                 s.editInput,
                 {
-                  backgroundColor: T.surface,
-                  borderColor: T.borderInput,
-                  color: T.textPrimary,
+                  backgroundColor: T.bgElevated,
+                  borderColor: T.borderSubtle,
+                  color: T.text,
                 },
               ]}
               value={editReorderPoint}
               onChangeText={setEditReorderPoint}
               placeholder="0"
-              placeholderTextColor={T.textSecondary}
+              placeholderTextColor={T.textMuted}
               keyboardType="number-pad"
             />
 
-            <Text style={[s.fieldLabel, { color: T.textSecondary }]}>
-              Notes
-            </Text>
+            <Text style={[s.fieldLabel, { color: T.textMuted }]}>Notes</Text>
             <TextInput
               style={[
                 s.editInput,
                 {
-                  backgroundColor: T.surface,
-                  borderColor: T.borderInput,
-                  color: T.textPrimary,
+                  backgroundColor: T.bgElevated,
+                  borderColor: T.borderSubtle,
+                  color: T.text,
                   height: 80,
                   textAlignVertical: "top",
                 },
@@ -1351,7 +1222,7 @@ export default function ProductDetailScreen() {
               value={editNotes}
               onChangeText={setEditNotes}
               placeholder="Optional notes..."
-              placeholderTextColor={T.textSecondary}
+              placeholderTextColor={T.textMuted}
               multiline
             />
 
@@ -1361,26 +1232,18 @@ export default function ProductDetailScreen() {
               disabled={savingEdit}
               style={{ marginTop: 16 }}
             >
-              <LinearGradient
-                colors={[sectionColor, T.secondary]}
-                start={{ x: 0.5, y: 0 }}
-                end={{ x: 0.5, y: 1 }}
-                style={s.confirmBtn}
-              >
+              <View style={[s.confirmBtn, { backgroundColor: T.accent }]}>
                 {savingEdit ? (
-                  <ActivityIndicator color="#FFF" />
+                  <ActivityIndicator color={color.black} />
                 ) : (
                   <>
-                    <FontAwesome
-                      name="check-circle"
-                      size={16}
-                      color="#FFF"
-                      style={{ marginRight: 8 }}
-                    />
-                    <Text style={s.confirmBtnText}>Save Changes</Text>
+                    <Icon name="check" size={16} color={color.black} />
+                    <Text style={[s.confirmBtnText, { color: color.black }]}>
+                      Save Changes
+                    </Text>
                   </>
                 )}
-              </LinearGradient>
+              </View>
             </TouchableOpacity>
             <View style={{ height: 40 }} />
           </ScrollView>
@@ -1392,13 +1255,12 @@ export default function ProductDetailScreen() {
 
 function DetailRow({
   T,
-  icon,
   label,
   value,
   isLast,
 }: {
   T: any;
-  icon: string;
+  icon?: string;
   label: string;
   value: string;
   isLast?: boolean;
@@ -1408,17 +1270,13 @@ function DetailRow({
       style={[
         s.detailRow,
         !isLast && {
-          borderBottomWidth: 1,
-          borderBottomColor:
-            T.mode === "dark" ? "rgba(255,255,255,0.05)" : "#F2F2F2",
+          borderBottomWidth: layout.hairlineWidth,
+          borderBottomColor: T.borderFaint,
         },
       ]}
     >
-      <View style={[s.detailIconWrap, { backgroundColor: T.primary + "10" }]}>
-        <FontAwesome name={icon as any} size={12} color={T.primary} />
-      </View>
-      <Text style={[s.detailLabel, { color: T.textSecondary }]}>{label}</Text>
-      <Text style={[s.detailValue, { color: T.textPrimary }]}>{value}</Text>
+      <Text style={[s.detailLabel, { color: T.textMuted }]}>{label}</Text>
+      <Text style={[s.detailValue, { color: T.text }]}>{value}</Text>
     </View>
   );
 }
@@ -1426,357 +1284,317 @@ function DetailRow({
 const s = StyleSheet.create({
   screen: { flex: 1 },
   centered: { flex: 1, justifyContent: "center", alignItems: "center" },
-  headerWrap: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 10,
+
+  // Identity
+  barcodeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: layout.contentPaddingH,
+    paddingVertical: space.s12,
+    borderBottomWidth: layout.hairlineWidth,
   },
-  headerGradient: {
+
+  // KPI strip
+  kpiStrip: {
+    flexDirection: "row",
+    borderBottomWidth: layout.hairlineWidth,
+  },
+  kpiDivider: { width: layout.hairlineWidth },
+  kpiCell: {
     flex: 1,
-    paddingHorizontal: 20,
-    paddingBottom: 24,
-    borderBottomLeftRadius: 28,
-    borderBottomRightRadius: 28,
+    paddingVertical: space.s16,
+    paddingHorizontal: space.s12,
+    alignItems: "flex-start",
   },
-  headerTop: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingTop: STATUS_BAR,
-    marginBottom: 16,
-  },
-  backBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: "rgba(255,255,255,0.15)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  headerBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "rgba(255,255,255,0.15)",
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-  },
-  headerBadgeText: { color: "#FFF", fontSize: 10, fontWeight: "bold" },
-  headerName: { fontWeight: "bold", color: "#FFF", marginBottom: 4 },
-  headerBarcode: { flexDirection: "row", alignItems: "center", gap: 6 },
-  headerBarcodeText: { fontSize: 13, color: "rgba(255,255,255,0.5)" },
-  headerStats: {
-    flexDirection: "row",
-    backgroundColor: "rgba(255,255,255,0.1)",
-    borderRadius: 14,
-    paddingVertical: 14,
-    marginTop: 8,
-  },
-  headerStat: { flex: 1, alignItems: "center" },
-  headerStatNum: { fontSize: 20, fontWeight: "bold", color: "#FFF" },
-  headerStatLabel: {
-    fontSize: 10,
-    color: "rgba(255,255,255,0.5)",
-    marginTop: 2,
-  },
-  headerStatDiv: { width: 1, backgroundColor: "rgba(255,255,255,0.12)" },
-  body: { paddingHorizontal: 20, paddingTop: 20 },
-  locationCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    borderRadius: 14,
-    overflow: "hidden",
-    marginBottom: 12,
-    borderWidth: 1,
-  },
-  locationAccent: { width: 5, alignSelf: "stretch" },
-  locationTitle: {
-    fontSize: 15,
-    fontWeight: "bold",
-    padding: 14,
-    paddingBottom: 2,
-  },
-  locationSub: { fontSize: 12, paddingHorizontal: 14, paddingBottom: 14 },
-  locationAction: { alignItems: "center", paddingRight: 16 },
-  locationActionText: { fontSize: 10, fontWeight: "600", marginTop: 2 },
-  lowStockBanner: {
-    flexDirection: "row",
-    alignItems: "center",
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 16,
-    gap: 8,
-  },
-  lowStockText: { fontSize: 13, fontWeight: "500" },
-  sectionLabel: {
-    fontSize: 13,
-    fontWeight: "600",
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-    marginBottom: 8,
-    marginLeft: 4,
-    marginTop: 4,
-  },
-  card: {
-    borderRadius: 14,
-    borderWidth: 1,
-    marginBottom: 20,
-    overflow: "hidden",
-  },
-  detailRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingVertical: 13,
-    paddingHorizontal: 16,
-  },
-  detailIconWrap: {
-    width: 28,
-    height: 28,
-    borderRadius: 8,
-    justifyContent: "center",
-    alignItems: "center",
-    marginRight: 12,
-  },
-  detailLabel: { flex: 1, fontSize: 14 },
-  detailValue: {
-    fontSize: 14,
-    fontWeight: "500",
-    textAlign: "right",
-    maxWidth: "50%",
-  },
-  historyItem: { flexDirection: "row", minHeight: 50 },
-  historyTrack: { width: 28, alignItems: "center", paddingHorizontal: 16 },
-  historyDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    zIndex: 1,
-    marginTop: 4,
-  },
-  historyLine: { flex: 1, width: 1 },
-  historyBody: { flex: 1, paddingLeft: 4, paddingBottom: 16 },
-  historyAction: {
-    fontSize: 13,
-    fontWeight: "bold",
-    textTransform: "uppercase",
-    letterSpacing: 0.3,
-  },
-  historyLocation: { fontSize: 12, marginTop: 2 },
-  historyTime: { fontSize: 11, marginTop: 2 },
-  dateRow: { flexDirection: "row", gap: 10, marginBottom: 12 },
-  dateItem: { flex: 1, borderRadius: 12, padding: 14, borderWidth: 1 },
-  dateLabel: { fontSize: 11, marginBottom: 2 },
-  dateValue: { fontSize: 14, fontWeight: "600" },
-  relocateBtn: {
-    borderRadius: 14,
-    paddingVertical: 16,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  relocateBtnText: { color: "#FFF", fontSize: 15, fontWeight: "bold" },
-  emptyCircle: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 1,
-    marginBottom: 16,
-  },
-  emptyTitle: { fontSize: 17, fontWeight: "bold" },
-  backLink: { marginTop: 12 },
-  backLinkText: { fontSize: 14, fontWeight: "600" },
-  emptyCard: {
-    borderRadius: 14,
-    padding: 28,
-    alignItems: "center",
-    borderWidth: 1,
-    marginBottom: 20,
-  },
-  emptyCardText: { fontSize: 13, marginTop: 10 },
-  modalScreen: { flex: 1 },
-  modalHeader: {
-    paddingTop: 12,
-    paddingBottom: 24,
-    paddingHorizontal: 20,
-    borderBottomLeftRadius: 24,
-    borderBottomRightRadius: 24,
-  },
-  modalHandle: {
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: "rgba(255,255,255,0.2)",
-    alignSelf: "center",
-    marginBottom: 16,
-  },
-  modalHeaderRow: { flexDirection: "row", alignItems: "center" },
-  modalCloseBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: "rgba(255,255,255,0.12)",
-    justifyContent: "center",
-    alignItems: "center",
-    marginRight: 14,
-  },
-  modalHeaderSub: {
-    fontSize: 13,
-    color: "rgba(255,255,255,0.5)",
-    fontWeight: "600",
-  },
-  modalHeaderTitle: {
+  kpiValue: {
+    ...type.monoBody,
     fontSize: 20,
-    fontWeight: "bold",
-    color: "#FFF",
-    marginTop: 2,
+    lineHeight: 24,
+    fontWeight: "700",
   },
-  modalBody: { flex: 1, paddingHorizontal: 20, paddingTop: 20 },
-  fieldLabel: {
-    fontSize: 13,
-    fontWeight: "600",
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-    marginBottom: 8,
-    marginTop: 16,
-    marginLeft: 4,
-  },
-  sectionOption: {
-    flexDirection: "row",
-    alignItems: "center",
-    borderRadius: 12,
-    marginBottom: 6,
-    borderWidth: 1,
-    overflow: "hidden",
-  },
-  sectionColorBar: { width: 5, alignSelf: "stretch" },
-  sectionOptionText: { fontSize: 14, padding: 14 },
-  checkCircle: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    justifyContent: "center",
-    alignItems: "center",
-    marginRight: 14,
-  },
-  numberScroll: { maxHeight: 48 },
-  numBtn: {
-    width: 46,
-    height: 46,
-    borderRadius: 12,
-    borderWidth: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    marginRight: 8,
-  },
-  numBtnText: { fontSize: 16, fontWeight: "600" },
-  confirmBtn: {
-    borderRadius: 14,
-    paddingVertical: 16,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  confirmBtnText: { color: "#FFF", fontSize: 15, fontWeight: "bold" },
-  qtyControls: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginRight: 12,
-  },
-  qtyBtn: {
-    width: 30,
-    height: 30,
-    borderRadius: 8,
-    borderWidth: 1,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  qtyDisplay: {
-    fontSize: 18,
-    fontWeight: "bold",
-    minWidth: 36,
-    textAlign: "center",
-  },
-  actionRow: {
-    flexDirection: "row",
-    gap: 10,
-    marginBottom: 20,
-  },
-  actionBtn: {
-    flex: 0.7,
-    borderRadius: 14,
-    paddingVertical: 14,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    gap: 6,
-  },
-  actionBtnText: { fontSize: 13, fontWeight: "600" },
-  editInput: {
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 11,
-    fontSize: 14,
-    marginBottom: 8,
-  },
-  editPicker: {
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 8,
-  },
-  editPickerText: { fontSize: 14 },
-  editDropdown: {
-    borderWidth: 1,
-    borderRadius: 10,
-    marginBottom: 8,
-    overflow: "hidden",
-  },
-  editDropdownItem: {
-    paddingHorizontal: 14,
-    paddingVertical: 11,
-    borderBottomWidth: 1,
-  },
-  editDropdownText: { fontSize: 13 },
+  kpiLabel: { ...type.labelSm, marginTop: 4 },
+
+  body: { paddingHorizontal: layout.contentPaddingH, paddingTop: space.s20 },
+
+  // Photo
   photoCard: {
-    borderRadius: 14,
     overflow: "hidden",
-    marginBottom: 12,
-    borderWidth: 1,
+    marginBottom: space.s12,
+    borderWidth: layout.hairlineWidth,
     position: "relative",
   },
-  productPhoto: {
-    width: "100%",
-    height: 200,
-  },
+  productPhoto: { width: "100%", height: 200 },
   photoOverlay: {
     position: "absolute",
     bottom: 10,
     right: 10,
     width: 32,
     height: 32,
-    borderRadius: 16,
-    backgroundColor: "rgba(0,0,0,0.5)",
+    borderRadius: radius.pill,
+    backgroundColor: color.blackAlpha.a6,
     justifyContent: "center",
     alignItems: "center",
   },
   addPhotoCard: {
-    borderRadius: 14,
-    borderWidth: 1,
+    borderWidth: layout.hairlineWidth,
     borderStyle: "dashed",
-    paddingVertical: 28,
+    paddingVertical: space.s24,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 12,
+    marginBottom: space.s12,
   },
-  addPhotoText: { fontSize: 13, marginTop: 8 },
+  addPhotoText: { ...type.bodySm, marginTop: space.s8 },
+
+  // Location cards
+  locationCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    overflow: "hidden",
+    marginBottom: space.s12,
+    borderWidth: layout.hairlineWidth,
+  },
+  locationAccent: { width: 4, alignSelf: "stretch" },
+  locationTitle: {
+    ...type.body,
+    fontWeight: "700",
+    padding: space.s16,
+    paddingBottom: 2,
+  },
+  locationSub: {
+    ...type.monoSm,
+    paddingHorizontal: space.s16,
+    paddingBottom: space.s16,
+  },
+  qtyControls: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginRight: space.s12,
+  },
+  qtyBtn: {
+    width: 32,
+    height: 32,
+    borderWidth: layout.hairlineWidth,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  qtyDisplay: {
+    ...type.monoBody,
+    fontSize: 18,
+    minWidth: 36,
+    textAlign: "center",
+  },
+
+  lowStockBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: space.s12,
+    marginBottom: space.s16,
+    gap: space.s8,
+  },
+  lowStockText: { ...type.bodySm, fontWeight: "500" },
+
+  sectionLabel: {
+    ...type.label,
+    marginBottom: space.s8,
+    marginLeft: 2,
+    marginTop: space.s8,
+  },
+
+  card: {
+    borderWidth: layout.hairlineWidth,
+    marginBottom: space.s20,
+    overflow: "hidden",
+  },
+
+  // Detail rows (key / value)
+  detailRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: space.s12,
+    paddingHorizontal: space.s16,
+  },
+  detailLabel: { ...type.label, flex: 1 },
+  detailValue: {
+    ...type.body,
+    fontWeight: "500",
+    textAlign: "right",
+    maxWidth: "55%",
+  },
+
+  // Activity / history
+  emptyCard: {
+    borderWidth: layout.hairlineWidth,
+    padding: space.s24,
+    alignItems: "center",
+    marginBottom: space.s20,
+  },
+  emptyCardText: { ...type.bodySm, marginTop: space.s8 },
+  historyItem: { flexDirection: "row", minHeight: 50 },
+  historyTrack: {
+    width: 28,
+    alignItems: "center",
+    paddingHorizontal: space.s16,
+  },
+  historyDot: {
+    width: 10,
+    height: 10,
+    borderRadius: radius.pill,
+    zIndex: 1,
+    marginTop: 4,
+  },
+  historyLine: { flex: 1, width: 1 },
+  historyBody: { flex: 1, paddingLeft: 4, paddingBottom: space.s16 },
+  historyAction: { ...type.label },
+  historyLocation: { ...type.monoSm, marginTop: 2 },
+  historyTime: { ...type.monoSm, marginTop: 2 },
+
+  dateRow: { flexDirection: "row", gap: space.s12, marginBottom: space.s12 },
+  dateItem: { flex: 1, borderWidth: layout.hairlineWidth, padding: space.s16 },
+  dateLabel: { ...type.labelSm, marginBottom: 4 },
+  dateValue: { ...type.body, fontWeight: "600" },
+
+  // Actions
+  actionRow: {
+    flexDirection: "row",
+    gap: space.s12,
+    marginBottom: space.s20,
+    marginTop: space.s8,
+  },
+  relocateBtn: {
+    flex: 1,
+    paddingVertical: space.s16,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: space.s8,
+  },
+  relocateBtnText: { ...type.body, fontWeight: "700" },
+  actionBtn: {
+    flex: 0.7,
+    paddingVertical: space.s16,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: layout.hairlineWidth,
+    gap: space.s8,
+  },
+  actionBtnText: { ...type.bodySm, fontWeight: "600" },
+
+  // Not-found
+  emptyCircle: {
+    width: 72,
+    height: 72,
+    borderRadius: radius.pill,
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: layout.hairlineWidth,
+    marginBottom: space.s16,
+  },
+  emptyTitle: { ...type.displayXs },
+  backLink: { marginTop: space.s12 },
+
+  // Modals
+  modalScreen: { flex: 1 },
+  modalHeader: {
+    paddingTop: space.s12,
+    paddingBottom: space.s16,
+    paddingHorizontal: layout.contentPaddingH,
+    borderBottomWidth: layout.hairlineWidth,
+  },
+  modalHandle: {
+    width: 36,
+    height: 4,
+    borderRadius: radius.pill,
+    alignSelf: "center",
+    marginBottom: space.s16,
+  },
+  modalHeaderRow: { flexDirection: "row", alignItems: "center" },
+  modalCloseBtn: {
+    width: 36,
+    height: 36,
+    justifyContent: "center",
+    alignItems: "center",
+    marginRight: space.s12,
+  },
+  modalHeaderSub: { ...type.label },
+  modalHeaderTitle: { ...type.displayMd, marginTop: 2 },
+  modalBody: {
+    flex: 1,
+    paddingHorizontal: layout.contentPaddingH,
+    paddingTop: space.s20,
+  },
+
+  fieldLabel: {
+    ...type.label,
+    marginBottom: space.s8,
+    marginTop: space.s16,
+    marginLeft: 2,
+  },
+  sectionOption: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: space.s8,
+    borderWidth: layout.hairlineWidth,
+    overflow: "hidden",
+  },
+  sectionColorBar: { width: 4, alignSelf: "stretch" },
+  sectionOptionText: { ...type.body, padding: space.s16 },
+  checkCircle: {
+    width: 24,
+    height: 24,
+    borderRadius: radius.pill,
+    justifyContent: "center",
+    alignItems: "center",
+    marginRight: space.s12,
+  },
+  numberScroll: { maxHeight: 48 },
+  numBtn: {
+    width: 46,
+    height: 46,
+    borderWidth: layout.hairlineWidth,
+    justifyContent: "center",
+    alignItems: "center",
+    marginRight: space.s8,
+  },
+  numBtnText: { ...type.monoBody, fontSize: 16, fontWeight: "600" },
+  confirmBtn: {
+    paddingVertical: space.s16,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: space.s8,
+    marginTop: space.s8,
+  },
+  confirmBtnText: { ...type.body, fontWeight: "700" },
+
+  // Edit form
+  editInput: {
+    borderWidth: layout.hairlineWidth,
+    paddingHorizontal: space.s16,
+    paddingVertical: 11,
+    fontFamily: type.body.fontFamily,
+    fontSize: 14,
+    marginBottom: space.s8,
+  },
+  editPicker: {
+    borderWidth: layout.hairlineWidth,
+    paddingHorizontal: space.s16,
+    paddingVertical: space.s12,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: space.s8,
+  },
+  editPickerText: { ...type.body },
+  editDropdown: {
+    borderWidth: layout.hairlineWidth,
+    marginBottom: space.s8,
+    overflow: "hidden",
+  },
+  editDropdownItem: {
+    paddingHorizontal: space.s16,
+    paddingVertical: 11,
+    borderBottomWidth: layout.hairlineWidth,
+  },
+  editDropdownText: { ...type.bodySm },
 });

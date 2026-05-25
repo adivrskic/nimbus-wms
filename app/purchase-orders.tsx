@@ -44,7 +44,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { ScreenHeader } from "../lib/nimbus/Header";
 import { Icon } from "../lib/nimbus/Icon";
-import { layout, space, type } from "../lib/nimbus/tokens";
+import { color, layout, space, type } from "../lib/nimbus/tokens";
 import { supabase } from "../lib/supabase";
 import { useTheme } from "../lib/theme";
 import { haptic } from "../lib/ui";
@@ -513,44 +513,26 @@ function CreatePoSheet({
     haptic.medium();
 
     try {
-      const { data: u } = await supabase.auth.getUser();
-      const userId = u?.user?.id ?? null;
-
-      // TODO(prod): replace with a SECURITY DEFINER trigger that
-      // serializes po_number generation. This client-side stamp is
-      // race-prone in the unlikely case of concurrent creates.
-      const poNumber = `PO-${Date.now().toString().slice(-8)}`;
-
-      const { data: po, error: pErr } = await supabase
-        .from("purchase_orders")
-        .insert({
-          warehouse_id: warehouseId,
-          org_id: orgId,
-          po_number: poNumber,
-          supplier_name: supplierName.trim(),
-          supplier_contact: supplierContact.trim() || null,
-          status: sendAfter ? "sent" : "draft",
-          expected_date: expectedDate.trim() || null,
-          notes: notes.trim() || null,
-          created_by: userId,
-        })
-        .select()
-        .single();
-      if (pErr || !po) throw pErr ?? new Error("PO insert failed");
-
-      // Insert line items
-      const lineRows = items.map((it) => ({
-        po_id: po.id,
-        product_id: it.product_id,
-        product_name: it.product_name,
-        barcode: it.barcode || null,
-        quantity_expected: it.quantity_expected,
-        org_id: orgId,
-      }));
-      const { error: lErr } = await supabase
-        .from("po_line_items")
-        .insert(lineRows);
-      if (lErr) throw lErr;
+      // Atomic create: header + line items in one transaction, with
+      // po_number generated server-side (race-free). Replaces the old
+      // client-side two-step insert that could orphan a PO header if the
+      // line-item insert failed, and the race-prone Date.now() stamp.
+      const { data: po, error } = await supabase.rpc("create_purchase_order", {
+        p_warehouse_id: warehouseId,
+        p_org_id: orgId,
+        p_supplier_name: supplierName.trim(),
+        p_supplier_contact: supplierContact.trim() || null,
+        p_status: sendAfter ? "sent" : "draft",
+        p_expected_date: expectedDate.trim() || null,
+        p_notes: notes.trim() || null,
+        p_items: items.map((it) => ({
+          product_id: it.product_id,
+          product_name: it.product_name,
+          barcode: it.barcode || null,
+          quantity_expected: it.quantity_expected,
+        })),
+      });
+      if (error || !po) throw error ?? new Error("PO insert failed");
 
       haptic.success();
       onSaved();
@@ -758,7 +740,9 @@ function CreatePoSheet({
                 },
               ]}
             >
-              <Text style={[type.label, { color: "#000", letterSpacing: 2 }]}>
+              <Text
+                style={[type.label, { color: color.black, letterSpacing: 2 }]}
+              >
                 {saving ? "SAVING…" : "SAVE & SEND"}
               </Text>
             </Pressable>

@@ -67,6 +67,9 @@ export function OfflineProvider({ children }: { children: React.ReactNode }) {
   const [conflicts, setConflicts] = useState<Conflict[]>([]);
   const [syncing, setSyncing] = useState(false);
   const wasOffline = useRef(false);
+  // Mirror of `queue` for callbacks/effects that would otherwise close over a
+  // stale value (immediate post-enqueue sync, foreground/online edges).
+  const queueRef = useRef<OfflineOp[]>([]);
 
   // Listen to network state
   useEffect(() => {
@@ -87,32 +90,74 @@ export function OfflineProvider({ children }: { children: React.ReactNode }) {
     loadQueue();
   }, []);
 
+  // Defined before the effects below so it can be a stable dependency.
+  // Reads the queue from queueRef (not a closed-over value) and relies on the
+  // hoisted processOp / persistQueue declarations further down.
+  const syncPending = useCallback(async () => {
+    const snapshot = queueRef.current;
+    if (syncing || snapshot.length === 0) return;
+    setSyncing(true);
+
+    const remaining: OfflineOp[] = [];
+    const newConflicts: Conflict[] = [];
+
+    for (const op of snapshot) {
+      try {
+        const result = await processOp(op);
+        if (result.conflict) {
+          newConflicts.push({
+            op,
+            serverData: result.serverData,
+            reason: result.reason || "Modified while offline",
+          });
+        }
+        // If success or conflict, don't re-queue (conflicts go to conflict list)
+      } catch (e: any) {
+        // Network or unexpected error — keep in queue to retry
+        remaining.push(op);
+      }
+    }
+
+    // Preserve anything enqueued while this sync was running.
+    const added = queueRef.current.filter((op) => !snapshot.includes(op));
+    await persistQueue([...remaining, ...added]);
+    if (newConflicts.length > 0) {
+      setConflicts((prev) => [...prev, ...newConflicts]);
+    }
+    setSyncing(false);
+  }, [syncing]);
+
   // Auto-sync when coming back online
   useEffect(() => {
-    if (isOnline && wasOffline.current && queue.length > 0) {
+    if (isOnline && wasOffline.current && queueRef.current.length > 0) {
       wasOffline.current = false;
       syncPending();
     }
-  }, [isOnline]);
+  }, [isOnline, syncPending]);
 
   // Also try syncing when app comes to foreground
   useEffect(() => {
     const sub = AppState.addEventListener("change", (state) => {
-      if (state === "active" && isOnline && queue.length > 0) {
+      if (state === "active" && isOnline && queueRef.current.length > 0) {
         syncPending();
       }
     });
     return () => sub.remove();
-  }, [isOnline, queue.length]);
+  }, [isOnline, syncPending]);
 
   async function loadQueue() {
     try {
       const raw = await AsyncStorage.getItem(QUEUE_KEY);
-      if (raw) setQueue(JSON.parse(raw));
+      if (raw) {
+        const parsed: OfflineOp[] = JSON.parse(raw);
+        queueRef.current = parsed;
+        setQueue(parsed);
+      }
     } catch {}
   }
 
   async function persistQueue(newQueue: OfflineOp[]) {
+    queueRef.current = newQueue;
     setQueue(newQueue);
     try {
       await AsyncStorage.setItem(QUEUE_KEY, JSON.stringify(newQueue));
@@ -133,37 +178,6 @@ export function OfflineProvider({ children }: { children: React.ReactNode }) {
       setTimeout(() => syncPending(), 100);
     }
   }
-
-  const syncPending = useCallback(async () => {
-    if (syncing || queue.length === 0) return;
-    setSyncing(true);
-
-    const remaining: OfflineOp[] = [];
-    const newConflicts: Conflict[] = [];
-
-    for (const op of queue) {
-      try {
-        const result = await processOp(op);
-        if (result.conflict) {
-          newConflicts.push({
-            op,
-            serverData: result.serverData,
-            reason: result.reason || "Modified while offline",
-          });
-        }
-        // If success or conflict, don't re-queue (conflicts go to conflict list)
-      } catch (e: any) {
-        // Network or unexpected error — keep in queue to retry
-        remaining.push(op);
-      }
-    }
-
-    await persistQueue(remaining);
-    if (newConflicts.length > 0) {
-      setConflicts((prev) => [...prev, ...newConflicts]);
-    }
-    setSyncing(false);
-  }, [queue, syncing]);
 
   async function processOp(
     op: OfflineOp
@@ -191,24 +205,35 @@ export function OfflineProvider({ children }: { children: React.ReactNode }) {
           .select()
           .single();
         if (pErr) throw pErr;
-        // Insert location
+        // Insert location. If this fails, roll back the product we just
+        // created so we don't leave an orphaned product with no location.
         const { error: lErr } = await supabase.from("locations").insert({
           ...location,
           product_id: newProduct.id,
           warehouse_id: op.warehouseId,
         });
-        if (lErr) throw lErr;
-        // Log scan_history
+        if (lErr) {
+          await supabase.from("products").delete().eq("id", newProduct.id);
+          throw lErr;
+        }
+        // Log scan_history (best-effort — a failed audit row must not undo
+        // the registration, which has already succeeded above).
         const {
           data: { user },
         } = await supabase.auth.getUser();
-        await supabase.from("scan_history").insert({
-          product_id: newProduct.id,
-          warehouse_id: op.warehouseId,
-          scanned_by: user?.id,
-          action: "register",
-          to_location: location.to_location_label,
-        });
+        await supabase
+          .from("scan_history")
+          .insert({
+            product_id: newProduct.id,
+            warehouse_id: op.warehouseId,
+            scanned_by: user?.id,
+            action: "register",
+            to_location: location.to_location_label,
+          })
+          .then(({ error }) => {
+            if (error && __DEV__)
+              console.warn("[offline] register scan_history failed", error);
+          });
         return {};
       }
 
