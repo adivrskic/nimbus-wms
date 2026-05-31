@@ -599,10 +599,19 @@ export default function ProductDetailScreen() {
                   onPress={() => openRelocate(idx)}
                 >
                   <Text style={[s.locationTitle, { color: T.text }]}>
-                    {loc.sections?.code} {"\u2014"} {loc.sections?.name}
+                    {loc.quarantined
+                      ? "QC QUARANTINE"
+                      : `${loc.sections?.code} \u2014 ${loc.sections?.name}`}
                   </Text>
-                  <Text style={[s.locationSub, { color: T.textMuted }]}>
-                    Bay {loc.bay}, Level {loc.level}
+                  <Text
+                    style={[
+                      s.locationSub,
+                      { color: loc.quarantined ? T.danger : T.textMuted },
+                    ]}
+                  >
+                    {loc.quarantined
+                      ? "On hold for inspection \u2014 not available"
+                      : `Bay ${loc.bay}, Level ${loc.level}`}
                   </Text>
                 </TouchableOpacity>
                 <View style={s.qtyControls}>
