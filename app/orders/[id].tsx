@@ -714,32 +714,14 @@ function PickRunSheet({
     setPickingId(item.id);
     haptic.medium();
     try {
-      const { data: u } = await supabase.auth.getUser();
-      const userId = u?.user?.id ?? null;
-      const now = new Date().toISOString();
-
-      // Mark item fully picked
-      const { error: itemErr } = await supabase
-        .from("order_items")
-        .update({
-          quantity_picked: item.quantity_requested,
-          picked_by: userId,
-          picked_at: now,
-        })
-        .eq("id", item.id);
-      if (itemErr) throw itemErr;
-
-      // Log scan_history with from_location (origin of the pick)
-      await supabase.from("scan_history").insert({
-        product_id: item.products?.id ?? null,
-        warehouse_id: warehouseId,
-        scanned_by: userId,
-        org_id: order.org_id,
-        action: "pick",
-        from_location: locationLabel(item.locations),
-        quantity: item.quantity_requested,
-        notes: `Order ${order.order_number ?? order.id.slice(0, 8)}`,
+      // Atomic pick: marks the line picked, decrements the picked-from on-hand,
+      // and logs the scan in one transaction (app.pick_order_item). Replaces the
+      // old update-then-insert that never touched locations.quantity.
+      const { error } = await supabase.rpc("pick_order_item", {
+        p_org_id: order.org_id,
+        p_order_item_id: item.id,
       });
+      if (error) throw error;
 
       onItemPicked();
     } catch (e: any) {
