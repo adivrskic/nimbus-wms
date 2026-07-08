@@ -44,6 +44,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { LINKS } from "../lib/links";
 import { Icon } from "../lib/nimbus/Icon";
+import { LogoWordmark } from "../lib/nimbus/Logo";
 import { color, layout, space, type } from "../lib/nimbus/tokens";
 import { supabase } from "../lib/supabase";
 import { haptic } from "../lib/ui";
@@ -170,30 +171,15 @@ export default function LoginScreen() {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          {/* Nimbus mark */}
+          {/* Nautilus lockup — same glyph + stacked wordmark as the desk
+              app's SideRail and the marketing site nav. */}
           <View style={styles.markWrap}>
-            <View style={[styles.mark, { borderColor: L.accent }]}>
-              <Text
-                style={[
-                  type.displayLg,
-                  { color: L.accent, fontSize: 22, letterSpacing: -0.5 },
-                ]}
-              >
-                N
-              </Text>
-            </View>
-            <Text
-              style={[
-                type.label,
-                {
-                  color: L.textMuted,
-                  letterSpacing: 3,
-                  marginTop: space.s12,
-                },
-              ]}
-            >
-              NIMBUS WMS
-            </Text>
+            <LogoWordmark
+              size="lg"
+              glyphColor={L.text}
+              nameColor={L.text}
+              subColor={L.textMuted}
+            />
           </View>
 
           {/* Headline */}
@@ -355,7 +341,7 @@ export default function LoginScreen() {
               },
             ]}
           >
-            NIMBUS · {new Date().getFullYear()}
+            NAUTILUS INVENTORY · {new Date().getFullYear()}
           </Text>
         </ScrollView>
       </KeyboardAvoidingView>

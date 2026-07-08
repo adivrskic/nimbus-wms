@@ -9,19 +9,19 @@ export const APP_CONFIG = {
   // ----------------------------------------------------------
   // Product branding (your company — stays the same)
   // ----------------------------------------------------------
-  productName: "Nimbus WMS",
+  productName: "Nautilus Inventory",
 
   // ----------------------------------------------------------
   // Client branding (changes per customer)
   // ----------------------------------------------------------
-  clientName: "American Flooring Services",
-  clientShortName: "AFS",
+  clientName: "Nautilus Inventory",
+  clientShortName: "NAUTILUS",
 
   // ----------------------------------------------------------
   // Client logo — swap this require() per customer
   // Place logo files in /assets/ and reference here
   // ----------------------------------------------------------
-  clientLogo: require("../assets/logo.webp"),
+  clientLogo: require("../assets/images/icon.png"),
 
   // ----------------------------------------------------------
   // Theme colors — Nimbus dark palette. Kept only for legacy

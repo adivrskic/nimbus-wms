@@ -58,8 +58,8 @@ import { useWarehouse } from "../../lib/warehouse";
 // and remove this fallback. Keeping the hardcoded value avoids a build
 // break if the import path differs across environments.
 const APP_INFO = {
-  productName: "Nimbus WMS",
-  clientName: "American Flooring Services",
+  productName: "Nautilus Inventory",
+  clientName: "Nautilus Inventory",
   version: "1.0.0",
 };
 
