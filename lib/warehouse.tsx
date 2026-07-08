@@ -6,6 +6,7 @@ const ACTIVE_WH_KEY = "nimbus_active_warehouse_id";
 
 type Warehouse = {
   id: string;
+  org_id: string;
   name: string;
   address: string | null;
   city: string | null;
@@ -19,7 +20,10 @@ type WarehouseContextType = {
   greeting: string;
   userName: string;
   userId: string;
+  /** Org role from app.org_members: "owner" | "admin" | "member". */
   userRole: string;
+  /** Org of the ACTIVE warehouse — the user can belong to several orgs. */
+  orgId: string;
   warehouseName: string;
   warehouseAddress: string;
   warehouseId: string;
@@ -40,7 +44,8 @@ const defaults: WarehouseContextType = {
   greeting: "",
   userName: "",
   userId: "",
-  userRole: "staff",
+  userRole: "member",
+  orgId: "",
   warehouseName: "",
   warehouseAddress: "",
   warehouseId: "",
@@ -92,14 +97,6 @@ export function WarehouseProvider({ children }: { children: React.ReactNode }) {
     const userName =
       user.user_metadata?.full_name || user.email?.split("@")[0] || "";
 
-    // Fetch user role from profiles
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("role")
-      .eq("id", user.id)
-      .maybeSingle();
-    const userRole = profile?.role || "staff";
-
     // RLS on warehouses already filters to only those the user has access to
     const { data: warehouses } = await supabase
       .from("warehouses")
@@ -127,12 +124,26 @@ export function WarehouseProvider({ children }: { children: React.ReactNode }) {
       } catch {}
     }
 
+    // Role comes from app.org_members for the ACTIVE warehouse's org —
+    // profiles has no role column, and the user may belong to several orgs.
+    let userRole = "member";
+    if (wh?.org_id) {
+      const { data: membership } = await supabase
+        .from("org_members")
+        .select("role")
+        .eq("org_id", wh.org_id)
+        .eq("user_id", user.id)
+        .maybeSingle();
+      userRole = membership?.role || "member";
+    }
+
     setData((prev) => ({
       ...prev,
       greeting,
       userName,
       userId: user.id,
       userRole,
+      orgId: wh?.org_id || "",
       warehouseName: wh?.name || "",
       warehouseAddress: wh?.address || "",
       warehouseId: wh?.id || "",
@@ -158,9 +169,24 @@ export function WarehouseProvider({ children }: { children: React.ReactNode }) {
       } = await supabase.auth.getUser();
       if (!user) return { success: false, error: "Not authenticated" };
 
+      // Warehouses are org-scoped; reuse the active org (fall back to the
+      // user's first membership if no warehouse is active yet).
+      let orgId = data.orgId;
+      if (!orgId) {
+        const { data: m } = await supabase
+          .from("org_members")
+          .select("org_id")
+          .eq("user_id", user.id)
+          .limit(1)
+          .maybeSingle();
+        orgId = m?.org_id || "";
+      }
+      if (!orgId) return { success: false, error: "No organization found" };
+
       const { data: wh, error: whErr } = await supabase
         .from("warehouses")
         .insert({
+          org_id: orgId,
           name: fields.name,
           address: fields.address || null,
           city: fields.city || null,

@@ -56,15 +56,33 @@ const ITEMS: MoreItem[] = [
     route: "/map",
   },
   {
+    icon: "package",
+    label: "Pick waves",
+    hint: "Run released waves — batch picking",
+    route: "/waves",
+  },
+  {
     icon: "clipboard-list",
     label: "Purchase orders",
     hint: "Inbound shipments and receive runs",
     route: "/purchase-orders",
   },
   {
+    icon: "truck",
+    label: "Inbound (ASN)",
+    hint: "Receive shipments by line or pallet LPN",
+    route: "/inbound",
+  },
+  {
+    icon: "check",
+    label: "Cycle counts",
+    hint: "Scheduled blind counts for this facility",
+    route: "/cycle-counts",
+  },
+  {
     icon: "rotate-ccw",
     label: "Returns",
-    hint: "Log and review returns",
+    hint: "Log, restock and review returns",
     route: "/returns",
   },
   {

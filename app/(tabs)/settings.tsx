@@ -119,17 +119,19 @@ export default function SettingsScreen() {
     if (!u?.user) return;
     setEmail(u.user.email ?? "");
 
+    // profiles has no role column — role comes from org_members via the
+    // warehouse context.
     const { data: profile } = await supabase
       .from("profiles")
-      .select("full_name, phone, role")
+      .select("full_name, phone")
       .eq("id", u.user.id)
       .maybeSingle();
     if (profile) {
       setFullName(profile.full_name ?? "");
       setPhone(profile.phone ?? "");
-      setRole(profile.role ?? null);
     }
-  }, []);
+    setRole(wh.userRole || null);
+  }, [wh.userRole]);
 
   useFocusEffect(
     useCallback(() => {

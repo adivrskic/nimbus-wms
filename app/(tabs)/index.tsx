@@ -137,8 +137,9 @@ export default function HomeScreen() {
     if (!refreshing) setLoading(true);
 
     const [statsRes, scansRes] = await Promise.all([
-      // Migrated RPC — returns one row of aggregates for the facility
-      supabase.rpc("get_warehouse_stats", { wh_id: warehouseId }),
+      // Legacy helper — lives in the `public` schema, not `app`, so the
+      // default-schema client would 404 it without the explicit override.
+      supabase.schema("public").rpc("get_warehouse_stats", { wh_id: warehouseId }),
       supabase
         .from("scan_history")
         .select(

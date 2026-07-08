@@ -28,8 +28,15 @@
  *     known section adjacency graph.
  */
 
+import { CameraView, useCameraPermissions } from "expo-camera";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Alert,
   Modal,
@@ -37,10 +44,12 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { fefoSuggestions, type FefoSuggestion } from "../../lib/fefo";
 import { ScreenHeader } from "../../lib/nimbus/Header";
 import { Icon } from "../../lib/nimbus/Icon";
 import { layout, space, type } from "../../lib/nimbus/tokens";
@@ -76,6 +85,7 @@ interface ProductRef {
   name: string;
   barcode: string;
   internal_sku: string | null;
+  track_lots: boolean | null;
 }
 
 interface SectionRef {
@@ -203,7 +213,7 @@ export default function OrderDetailScreen() {
       .from("orders")
       .select(
         "id, order_number, order_type, status, customer_name, customer_phone, customer_address, delivery_date, delivery_window, assigned_to, notes, warehouse_id, org_id, created_at, updated_at, " +
-          "order_items(id, quantity_requested, quantity_picked, notes, products(id, name, barcode, internal_sku), locations(id, bay, level, sections(code, name, color)))"
+          "order_items(id, quantity_requested, quantity_picked, notes, products(id, name, barcode, internal_sku, track_lots), locations(id, bay, level, sections(code, name, color)))"
       )
       .eq("id", id)
       .single();
@@ -286,8 +296,10 @@ export default function OrderDetailScreen() {
     );
   }
 
+  // canAdjustQuantity: picking decrements on-hand; `canEdit` never existed on
+  // Permissions, so this gate silently hid picking for every role.
   const canPick =
-    perms?.canEdit && isPickable(order.status) && totals.items > 0;
+    perms?.canAdjustQuantity && isPickable(order.status) && totals.items > 0;
   const isReadOnly =
     order.status === "complete" || order.status === "cancelled";
 
@@ -702,6 +714,23 @@ function PickRunSheet({
 }) {
   const insets = useSafeAreaInsets();
   const [pickingId, setPickingId] = useState<string | null>(null);
+  // Scan-to-verify: tapping a line opens this overlay; the pick RPC only
+  // fires after the product barcode/SKU is scanned or typed (or the picker
+  // explicitly skips verification).
+  const [verifyItem, setVerifyItem] = useState<OrderItem | null>(null);
+  // FEFO guidance for lot-tracked lines: productId → earliest-expiring lot.
+  const [fefoHints, setFefoHints] = useState<Map<string, FefoSuggestion>>(
+    new Map()
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    const lotTracked = items
+      .filter((i) => i.products?.track_lots && i.products?.id)
+      .map((i) => i.products!.id);
+    if (lotTracked.length === 0) return;
+    fefoSuggestions(Array.from(new Set(lotTracked))).then(setFefoHints);
+  }, [open, items]);
 
   const totalRequested = items.reduce((s, i) => s + i.quantity_requested, 0);
   const totalPicked = items.reduce((s, i) => s + pickedQty(i), 0);
@@ -709,8 +738,19 @@ function PickRunSheet({
   const remaining = items.filter((i) => !isFullyPicked(i));
   const completed = items.filter(isFullyPicked);
 
-  async function pickItem(item: OrderItem) {
+  function pickItem(item: OrderItem) {
     if (isFullyPicked(item) || pickingId) return;
+    haptic.light();
+    // No barcode on record → nothing to verify against; pick directly.
+    if (!item.products?.barcode && !item.products?.internal_sku) {
+      void commitPick(item);
+      return;
+    }
+    setVerifyItem(item);
+  }
+
+  async function commitPick(item: OrderItem) {
+    setVerifyItem(null);
     setPickingId(item.id);
     haptic.medium();
     try {
@@ -833,6 +873,11 @@ function PickRunSheet({
                     isPicking={pickingId === item.id}
                     isLast={idx === remaining.length - 1}
                     onPress={() => pickItem(item)}
+                    fefo={
+                      item.products?.id
+                        ? fefoHints.get(item.products.id)
+                        : undefined
+                    }
                     theme={T}
                   />
                 ))}
@@ -906,8 +951,173 @@ function PickRunSheet({
             </Pressable>
           </View>
         ) : null}
+
+        {verifyItem ? (
+          <ScanVerifyOverlay
+            item={verifyItem}
+            theme={T}
+            onVerified={() => void commitPick(verifyItem)}
+            onCancel={() => setVerifyItem(null)}
+          />
+        ) : null}
       </View>
     </Modal>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SCAN-TO-VERIFY OVERLAY — confirm the physical product before the pick RPC.
+// Camera scan when permitted, manual entry always, explicit skip fallback.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function ScanVerifyOverlay({
+  item,
+  theme: T,
+  onVerified,
+  onCancel,
+}: {
+  item: OrderItem;
+  theme: ReturnType<typeof useTheme>;
+  onVerified: () => void;
+  onCancel: () => void;
+}) {
+  const insets = useSafeAreaInsets();
+  const [permission] = useCameraPermissions();
+  const [manual, setManual] = useState("");
+  const [mismatch, setMismatch] = useState<string | null>(null);
+  const handled = useRef(false);
+
+  function matches(code: string): boolean {
+    const c = code.trim().toLowerCase();
+    if (!c) return false;
+    return (
+      c === (item.products?.barcode ?? "").trim().toLowerCase() ||
+      c === (item.products?.internal_sku ?? "").trim().toLowerCase()
+    );
+  }
+
+  function handleCode(code: string) {
+    if (handled.current) return;
+    if (matches(code)) {
+      handled.current = true;
+      haptic.success();
+      onVerified();
+    } else {
+      haptic.warning();
+      setMismatch(code.trim());
+    }
+  }
+
+  return (
+    <View style={[styles.verifyWrap, { backgroundColor: T.bg }]}>
+      <View
+        style={[
+          styles.runTopBar,
+          {
+            borderBottomColor: T.borderSubtle,
+            paddingTop: insets.top || space.s16,
+          },
+        ]}
+      >
+        <Pressable onPress={onCancel} hitSlop={10} accessibilityLabel="Cancel">
+          <Text style={[type.label, { color: T.textMuted, letterSpacing: 2 }]}>
+            CANCEL
+          </Text>
+        </Pressable>
+        <Text style={[type.label, { color: T.accent, letterSpacing: 2 }]}>
+          VERIFY PICK
+        </Text>
+        <View style={{ width: 48 }} />
+      </View>
+
+      <View style={{ padding: layout.contentPaddingH, gap: space.s12 }}>
+        <Text style={[type.bodyLg, { color: T.text }]} numberOfLines={2}>
+          {item.products?.name ?? "Unknown product"}
+        </Text>
+        <Text style={[type.monoSm, { color: T.textMuted }]}>
+          Scan or enter{" "}
+          {item.products?.barcode
+            ? `barcode ${item.products.barcode}`
+            : `SKU ${item.products?.internal_sku}`}
+        </Text>
+      </View>
+
+      {permission?.granted ? (
+        <View style={[styles.verifyCamera, { borderColor: T.borderSubtle }]}>
+          <CameraView
+            style={{ flex: 1 }}
+            barcodeScannerSettings={{
+              barcodeTypes: [
+                "ean13",
+                "ean8",
+                "upc_a",
+                "upc_e",
+                "code128",
+                "code39",
+                "code93",
+                "itf14",
+                "qr",
+              ],
+            }}
+            onBarcodeScanned={({ data }) => handleCode(data)}
+          />
+        </View>
+      ) : null}
+
+      <View style={{ padding: layout.contentPaddingH, gap: space.s12 }}>
+        <View
+          style={[
+            styles.verifyField,
+            { borderColor: T.borderSubtle, backgroundColor: T.surface2 },
+          ]}
+        >
+          <TextInput
+            value={manual}
+            onChangeText={(v) => {
+              setManual(v);
+              setMismatch(null);
+            }}
+            placeholder="Enter barcode / SKU"
+            placeholderTextColor={T.textDim}
+            autoCapitalize="none"
+            autoCorrect={false}
+            onSubmitEditing={() => handleCode(manual)}
+            style={[type.monoBody, { color: T.text, flex: 1, padding: 0 }]}
+          />
+          <Pressable onPress={() => handleCode(manual)} hitSlop={10}>
+            <Text style={[type.labelSm, { color: T.accent, letterSpacing: 1.5 }]}>
+              CHECK
+            </Text>
+          </Pressable>
+        </View>
+
+        {mismatch ? (
+          <View
+            style={[
+              styles.verifyMismatch,
+              { borderLeftColor: T.danger, backgroundColor: T.dangerDim },
+            ]}
+          >
+            <Text style={[type.monoSm, { color: T.danger }]}>
+              "{mismatch}" doesn't match this line — check you're holding the
+              right product.
+            </Text>
+          </View>
+        ) : null}
+
+        <Pressable
+          onPress={() => {
+            haptic.light();
+            onVerified();
+          }}
+          style={[styles.verifySkip, { borderColor: T.borderSubtle }]}
+        >
+          <Text style={[type.labelSm, { color: T.textMuted, letterSpacing: 1.5 }]}>
+            PICK WITHOUT SCAN
+          </Text>
+        </Pressable>
+      </View>
+    </View>
   );
 }
 
@@ -917,6 +1127,7 @@ function RunRow({
   isLast,
   onPress,
   completed,
+  fefo,
   theme: T,
 }: {
   item: OrderItem;
@@ -924,6 +1135,7 @@ function RunRow({
   isLast: boolean;
   onPress: () => void;
   completed?: boolean;
+  fefo?: FefoSuggestion;
   theme: ReturnType<typeof useTheme>;
 }) {
   const sectionColor = item.locations?.sections?.color ?? T.accent;
@@ -955,6 +1167,12 @@ function RunRow({
         <Text style={[type.monoSm, { color: T.textDim, marginTop: 2 }]}>
           {item.products?.internal_sku ?? item.products?.barcode}
         </Text>
+        {fefo ? (
+          <Text style={[type.labelSm, { color: T.warning, letterSpacing: 1.5, marginTop: 4 }]}>
+            FEFO · LOT {fefo.lotNumber}
+            {fefo.expiresAt ? ` · EXP ${fefo.expiresAt}` : ""}
+          </Text>
+        ) : null}
       </View>
       <View style={styles.runRowRight}>
         {completed ? (
@@ -1118,5 +1336,34 @@ const styles = StyleSheet.create({
     paddingHorizontal: layout.contentPaddingH,
     paddingTop: space.s12,
     borderTopWidth: layout.hairlineWidth,
+  },
+
+  // Scan-to-verify overlay
+  verifyWrap: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 10,
+  },
+  verifyCamera: {
+    marginHorizontal: layout.contentPaddingH,
+    height: 220,
+    borderWidth: 1,
+    overflow: "hidden",
+  },
+  verifyField: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.s12,
+    borderWidth: 1,
+    paddingHorizontal: space.s12,
+    paddingVertical: space.s12,
+  },
+  verifyMismatch: {
+    borderLeftWidth: 4,
+    padding: space.s12,
+  },
+  verifySkip: {
+    alignItems: "center",
+    paddingVertical: space.s12,
+    borderWidth: 1,
   },
 });

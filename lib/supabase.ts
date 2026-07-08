@@ -2,9 +2,11 @@ import { createClient } from "@supabase/supabase-js";
 import * as SecureStore from "expo-secure-store";
 import "react-native-url-polyfill/auto";
 
-const SUPABASE_URL = "https://wbtudewmkomijnrgeuvd.supabase.co";
-const SUPABASE_ANON_KEY =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndidHVkZXdta29taWpucmdldXZkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQyODkyMDMsImV4cCI6MjA4OTg2NTIwM30.pPra_OylHKz0urjj5aISXVeWpbSSyuG75r7aRnokHM4";
+// nimbus-wms — the same Supabase project the desktop app (app-nimbus1) uses.
+// The old american-flooring-services project had no `app` schema, so every
+// query from this client 406'd against it.
+const SUPABASE_URL = "https://seypbrzjjiuibrwyxewj.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_-KEIXG0jaD_gHypYjzevZA_KNF-mSku";
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   db: { schema: "app" },

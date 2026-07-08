@@ -466,7 +466,9 @@ function CreatePoSheet({
 }) {
   const insets = useSafeAreaInsets();
 
-  const [orgId, setOrgId] = useState<string | null>(null);
+  // Org of the active warehouse (users can belong to several orgs).
+  const { orgId: activeOrgId } = useWarehouse();
+  const orgId = activeOrgId || null;
   const [supplierName, setSupplierName] = useState("");
   const [supplierContact, setSupplierContact] = useState("");
   const [expectedDate, setExpectedDate] = useState(""); // YYYY-MM-DD
@@ -482,19 +484,7 @@ function CreatePoSheet({
     setExpectedDate("");
     setNotes("");
     setItems([]);
-    if (orgId) return;
-    (async () => {
-      const { data: u } = await supabase.auth.getUser();
-      if (!u?.user) return;
-      const { data: m } = await supabase
-        .from("org_members")
-        .select("org_id")
-        .eq("user_id", u.user.id)
-        .limit(1)
-        .maybeSingle();
-      if (m?.org_id) setOrgId(m.org_id);
-    })();
-  }, [open, orgId]);
+  }, [open]);
 
   async function commit(sendAfter: boolean) {
     if (!warehouseId || !orgId) {

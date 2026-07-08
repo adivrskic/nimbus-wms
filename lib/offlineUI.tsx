@@ -19,7 +19,10 @@ export function OfflineBanner() {
     <View
       style={[
         ob.wrap,
-        { backgroundColor: isOnline ? T.warning + "15" : T.danger + "15" },
+        {
+          backgroundColor: isOnline ? T.warningDim : T.dangerDim,
+          borderLeftColor: isOnline ? T.warning : T.danger,
+        },
       ]}
     >
       <FontAwesome
@@ -57,10 +60,10 @@ const ob = StyleSheet.create({
     paddingVertical: 8,
     marginHorizontal: 16,
     marginBottom: 8,
-    borderRadius: 10,
+    borderLeftWidth: 4, // semantic left-edge escalation, per list-row pattern
   },
   text: { fontSize: 12, fontWeight: "600", flex: 1 },
-  badge: { borderRadius: 10, paddingHorizontal: 7, paddingVertical: 2 },
+  badge: { borderRadius: 999, paddingHorizontal: 7, paddingVertical: 2 },
   badgeText: { fontSize: 10, fontWeight: "bold", color: "#FFF" },
 });
 
@@ -98,7 +101,7 @@ export function ConflictModal() {
             {conflict.reason}
           </Text>
 
-          <View style={cm.detail}>
+          <View style={[cm.detail, { backgroundColor: T.surface3 }]}>
             <Text style={[cm.detailLabel, { color: T.textSecondary }]}>
               Operation: {conflict.op.type}
             </Text>
@@ -134,7 +137,7 @@ export function ConflictModal() {
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[cm.btn, { backgroundColor: T.primary }]}
+              style={[cm.btn, { backgroundColor: T.accent }]}
               onPress={() => {
                 haptic.medium();
                 resolveConflict(conflict.op.id, true);
@@ -144,10 +147,10 @@ export function ConflictModal() {
               <FontAwesome
                 name="mobile"
                 size={15}
-                color="#FFF"
+                color="#000"
                 style={{ marginRight: 6 }}
               />
-              <Text style={[cm.btnText, { color: "#FFF" }]}>Keep mine</Text>
+              <Text style={[cm.btnText, { color: "#000" }]}>Keep mine</Text>
             </TouchableOpacity>
           </View>
 
@@ -166,22 +169,23 @@ export function ConflictModal() {
 const cm = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
+    backgroundColor: "rgba(0,0,0,0.60)", // modal backdrop parity with desktop
     justifyContent: "center",
     alignItems: "center",
     paddingHorizontal: 32,
   },
   card: {
     width: "100%",
-    borderRadius: 20,
     padding: 24,
     alignItems: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.06)",
   },
   iconWrap: { marginBottom: 16 },
   iconCircle: {
     width: 56,
     height: 56,
-    borderRadius: 28,
+    borderRadius: 28, // pill exception: status/avatar circles stay round
     justifyContent: "center",
     alignItems: "center",
   },
@@ -189,8 +193,6 @@ const cm = StyleSheet.create({
   desc: { fontSize: 14, textAlign: "center", lineHeight: 20, marginBottom: 16 },
   detail: {
     width: "100%",
-    backgroundColor: "rgba(0,0,0,0.03)",
-    borderRadius: 10,
     padding: 12,
     marginBottom: 20,
   },
@@ -201,7 +203,6 @@ const cm = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 12,
     paddingVertical: 14,
   },
   btnText: { fontSize: 14, fontWeight: "600" },
@@ -220,11 +221,15 @@ export function PendingBadge({ style }: { style?: any }) {
     <View
       style={[
         pb.wrap,
-        { backgroundColor: isOnline ? THEME.primary : "#EF4444" },
+        { backgroundColor: isOnline ? THEME.primary : THEME.danger },
         style,
       ]}
     >
-      <Text style={pb.text}>{pendingCount > 9 ? "9+" : pendingCount}</Text>
+      <Text
+        style={[pb.text, { color: isOnline ? "#000" : "#FFF" }]}
+      >
+        {pendingCount > 9 ? "9+" : pendingCount}
+      </Text>
     </View>
   );
 }
@@ -236,12 +241,12 @@ const pb = StyleSheet.create({
     right: -6,
     minWidth: 16,
     height: 16,
-    borderRadius: 8,
+    borderRadius: 8, // pill exception: status dots stay round
     justifyContent: "center",
     alignItems: "center",
     paddingHorizontal: 4,
     borderWidth: 2,
-    borderColor: "#FFF",
+    borderColor: "#0a0a0a", // sits on the near-black tab bar
   },
-  text: { fontSize: 9, fontWeight: "bold", color: "#FFF" },
+  text: { fontSize: 9, fontWeight: "bold" },
 });

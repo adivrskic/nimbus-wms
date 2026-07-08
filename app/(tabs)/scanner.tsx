@@ -52,24 +52,12 @@ import { useOffline } from "../../lib/offline";
 import { supabase } from "../../lib/supabase";
 import { useTheme } from "../../lib/theme";
 import { haptic } from "../../lib/ui";
+import { useCategories, type Category } from "../../lib/categories";
 import { useWarehouse } from "../../lib/warehouse";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TYPES
 // ─────────────────────────────────────────────────────────────────────────────
-
-type ProductCategory =
-  | "hardwood"
-  | "laminate"
-  | "vinyl_lvp"
-  | "tile"
-  | "carpet"
-  | "underlayment"
-  | "adhesive"
-  | "trim_molding"
-  | "tools"
-  | "accessories"
-  | "other";
 
 interface SectionRow {
   id: string;
@@ -84,7 +72,7 @@ interface ExistingProduct {
   id: string;
   name: string;
   internal_sku: string | null;
-  category: ProductCategory | null;
+  categories: { name: string | null } | null;
   locations: Array<{
     bay: number;
     level: number;
@@ -92,20 +80,6 @@ interface ExistingProduct {
     sections: { code: string; name: string; color: string | null } | null;
   }>;
 }
-
-const CATEGORY_OPTIONS: { value: ProductCategory; label: string }[] = [
-  { value: "hardwood", label: "Hardwood" },
-  { value: "laminate", label: "Laminate" },
-  { value: "vinyl_lvp", label: "Vinyl / LVP" },
-  { value: "tile", label: "Tile" },
-  { value: "carpet", label: "Carpet" },
-  { value: "underlayment", label: "Underlayment" },
-  { value: "adhesive", label: "Adhesive" },
-  { value: "trim_molding", label: "Trim / Molding" },
-  { value: "tools", label: "Tools" },
-  { value: "accessories", label: "Accessories" },
-  { value: "other", label: "Other" },
-];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SCREEN
@@ -129,8 +103,9 @@ export default function ScannerScreen() {
   const [existing, setExisting] = useState<ExistingProduct | null>(null);
 
   // Form state (only used when registering a new product)
+  const { categories } = useCategories();
   const [name, setName] = useState("");
-  const [category, setCategory] = useState<ProductCategory>("hardwood");
+  const [categoryId, setCategoryId] = useState<string | null>(null);
   const [weight, setWeight] = useState("");
   const [quantity, setQuantity] = useState("1");
   const [notes, setNotes] = useState("");
@@ -144,7 +119,9 @@ export default function ScannerScreen() {
   const [bay, setBay] = useState("1");
   const [level, setLevel] = useState("1");
 
-  const [orgId, setOrgId] = useState<string | null>(null);
+  // Org of the active warehouse — the user can belong to several orgs, so
+  // never grab an arbitrary org_members row.
+  const orgId = wh.orgId || null;
   const [saving, setSaving] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
   const [showCategoryPicker, setShowCategoryPicker] = useState(false);
@@ -154,21 +131,6 @@ export default function ScannerScreen() {
   useEffect(() => {
     if (!permission?.granted) requestPermission();
   }, [permission, requestPermission]);
-
-  // ── One-time fetch: current user's org_id (needed for inserts) ──
-  useEffect(() => {
-    (async () => {
-      const { data: u } = await supabase.auth.getUser();
-      if (!u?.user) return;
-      const { data: m } = await supabase
-        .from("org_members")
-        .select("org_id")
-        .eq("user_id", u.user.id)
-        .limit(1)
-        .maybeSingle();
-      if (m?.org_id) setOrgId(m.org_id);
-    })();
-  }, []);
 
   // ── Sections list per warehouse ──
   useEffect(() => {
@@ -203,7 +165,7 @@ export default function ScannerScreen() {
     const { data } = await supabase
       .from("products")
       .select(
-        "id, name, internal_sku, category, locations(bay, level, quantity, sections(code, name, color))"
+        "id, name, internal_sku, categories(name), locations(bay, level, quantity, sections(code, name, color))"
       )
       .eq("barcode", barcode.trim())
       .maybeSingle();
@@ -285,7 +247,7 @@ export default function ScannerScreen() {
         .insert({
           name: name.trim(),
           barcode: barcode.trim(),
-          category,
+          category_id: categoryId,
           weight: weight.trim() || null,
           notes: notes.trim() || null,
           org_id: orgId,
@@ -340,7 +302,7 @@ export default function ScannerScreen() {
     setLookupDone(false);
     setExisting(null);
     setName("");
-    setCategory("hardwood");
+    setCategoryId(null);
     setWeight("");
     setQuantity("1");
     setNotes("");
@@ -571,7 +533,8 @@ export default function ScannerScreen() {
               theme={T}
               name={name}
               setName={setName}
-              category={category}
+              categoryId={categoryId}
+              categories={categories}
               onCategoryTap={() => setShowCategoryPicker(true)}
               weight={weight}
               setWeight={setWeight}
@@ -602,10 +565,13 @@ export default function ScannerScreen() {
       <PickerSheet
         open={showCategoryPicker}
         title="CATEGORY"
-        options={CATEGORY_OPTIONS.map((c) => ({ id: c.value, label: c.label }))}
-        currentId={category}
+        options={[
+          { id: "", label: "None" },
+          ...categories.map((c) => ({ id: c.id, label: c.name })),
+        ]}
+        currentId={categoryId ?? ""}
         onSelect={(v) => {
-          setCategory(v as ProductCategory);
+          setCategoryId(v || null);
           setShowCategoryPicker(false);
         }}
         onClose={() => setShowCategoryPicker(false)}
@@ -779,7 +745,8 @@ function RegisterForm({
   theme: T,
   name,
   setName,
-  category,
+  categoryId,
+  categories,
   onCategoryTap,
   weight,
   setWeight,
@@ -802,7 +769,8 @@ function RegisterForm({
   theme: ReturnType<typeof useTheme>;
   name: string;
   setName: (s: string) => void;
-  category: ProductCategory;
+  categoryId: string | null;
+  categories: Category[];
   onCategoryTap: () => void;
   weight: string;
   setWeight: (s: string) => void;
@@ -823,7 +791,7 @@ function RegisterForm({
   onSave: () => void;
 }) {
   const catLabel =
-    CATEGORY_OPTIONS.find((c) => c.value === category)?.label ?? category;
+    categories.find((c) => c.id === categoryId)?.name ?? "None";
   return (
     <View style={{ gap: space.s16 }}>
       <Text style={[type.label, { color: T.accent, letterSpacing: 2 }]}>

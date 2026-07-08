@@ -1,6 +1,5 @@
 import FontAwesome from "@expo/vector-icons/FontAwesome";
 import * as Haptics from "expo-haptics";
-import { LinearGradient } from "expo-linear-gradient";
 import { useEffect, useRef, useState } from "react";
 import {
   Animated,
@@ -11,6 +10,7 @@ import {
   View,
 } from "react-native";
 import { THEME } from "./config";
+import { color, font } from "./nimbus/tokens";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 
@@ -45,13 +45,15 @@ export const haptic = {
   heavy: () => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy),
   success: () =>
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success),
+  warning: () =>
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning),
   error: () =>
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error),
   selection: () => Haptics.selectionAsync(),
 };
 
 // ============================================================
-// GRADIENT CARD
+// GRADIENT CARD (legacy — flat Nimbus surface, sharp corners)
 // ============================================================
 export function GradientCard({
   children,
@@ -63,14 +65,19 @@ export function GradientCard({
   colors?: string[];
 }) {
   return (
-    <LinearGradient
-      colors={colors || [THEME.primary, THEME.secondary]}
-      start={{ x: 0, y: 0 }}
-      end={{ x: 1, y: 1 }}
-      style={[shadowStyles.cardLarge, { borderRadius: 14, padding: 20 }, style]}
+    <View
+      style={[
+        {
+          backgroundColor: colors?.[0] || THEME.surface,
+          borderWidth: 1,
+          borderColor: color.whiteAlpha.a2,
+          padding: 20,
+        },
+        style,
+      ]}
     >
       {children}
-    </LinearGradient>
+    </View>
   );
 }
 
@@ -113,10 +120,10 @@ export function ElevatedCard({
   const card = (
     <Animated.View
       style={[
-        shadowStyles.card,
         {
           backgroundColor: THEME.surface,
-          borderRadius: 14,
+          borderWidth: 1,
+          borderColor: color.whiteAlpha.a2,
           padding: 16,
           transform: [{ scale }],
         },
@@ -183,7 +190,7 @@ export function AnimatedCounter({
 export function Skeleton({
   width,
   height,
-  borderRadius = 8,
+  borderRadius = 0,
   style,
 }: {
   width: number | string;
@@ -222,7 +229,7 @@ export function Skeleton({
           width: width as any,
           height,
           borderRadius,
-          backgroundColor: "#DDD",
+          backgroundColor: color.whiteAlpha.a3,
           opacity,
         },
         style,
@@ -235,10 +242,10 @@ export function SkeletonCard() {
   return (
     <View
       style={[
-        shadowStyles.card,
         {
           backgroundColor: THEME.surface,
-          borderRadius: 14,
+          borderWidth: 1,
+          borderColor: color.whiteAlpha.a2,
           padding: 16,
           marginBottom: 12,
         },
@@ -264,11 +271,11 @@ export function SkeletonStats() {
         <View
           key={i}
           style={[
-            shadowStyles.card,
             {
               flex: 1,
               backgroundColor: THEME.surface,
-              borderRadius: 14,
+              borderWidth: 1,
+              borderColor: color.whiteAlpha.a2,
               padding: 16,
               marginHorizontal: 4,
               alignItems: "center",
@@ -306,10 +313,10 @@ export function showToast(message: string, type: ToastType = "success") {
   toastRef?.show(message, type);
 }
 
-const TOAST_ICONS: Record<ToastType, { name: string; bg: string }> = {
-  success: { name: "check-circle", bg: THEME.success },
-  error: { name: "exclamation-circle", bg: THEME.danger },
-  info: { name: "info-circle", bg: THEME.secondary },
+const TOAST_ICONS: Record<ToastType, { name: string; tone: string }> = {
+  success: { name: "check-circle", tone: color.success },
+  error: { name: "exclamation-circle", tone: color.danger },
+  info: { name: "info-circle", tone: color.info },
 };
 
 export function ToastProvider({ children }: { children: React.ReactNode }) {
@@ -317,7 +324,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [message, setMessage] = useState("");
   const [type, setType] = useState<ToastType>("success");
   const [visible, setVisible] = useState(false);
-  const timeout = useRef<ReturnType<typeof setTimeout>>();
+  const timeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => {
     setToastRef({
@@ -358,15 +365,10 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
         <Animated.View
           style={[toastStyles.container, { transform: [{ translateY }] }]}
         >
-          <LinearGradient
-            colors={[icon.bg, THEME.secondary]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 0 }}
-            style={toastStyles.gradient}
-          >
-            <FontAwesome name={icon.name as any} size={18} color="#FFF" />
+          <View style={[toastStyles.body, { borderLeftColor: icon.tone }]}>
+            <FontAwesome name={icon.name as any} size={16} color={icon.tone} />
             <Text style={toastStyles.text}>{message}</Text>
-          </LinearGradient>
+          </View>
         </Animated.View>
       )}
     </View>
@@ -381,18 +383,24 @@ const toastStyles = StyleSheet.create({
     right: 20,
     zIndex: 9999,
   },
-  gradient: {
+  // Nimbus: sharp corners, near-black glass surface, hairline border,
+  // 4px semantic left-edge escalation (same pattern as list-row alerts).
+  body: {
     flexDirection: "row",
     alignItems: "center",
-    borderRadius: 12,
+    backgroundColor: color.nearBlack,
+    borderWidth: 1,
+    borderColor: color.whiteAlpha.a2,
+    borderLeftWidth: 4,
     paddingHorizontal: 16,
     paddingVertical: 14,
     ...shadowStylesRaw.cardLarge,
   },
   text: {
-    color: "#FFF",
-    fontSize: 14,
-    fontWeight: "600",
+    color: color.white,
+    fontFamily: font.mono,
+    fontSize: 12,
+    letterSpacing: 0.5,
     marginLeft: 10,
     flex: 1,
   },
@@ -401,6 +409,15 @@ const toastStyles = StyleSheet.create({
 // ============================================================
 // BUTTON WITH HAPTIC + GRADIENT
 // ============================================================
+const btnTextStyle = {
+  color: "#000",
+  fontFamily: font.mono,
+  fontSize: 12,
+  fontWeight: "500" as const,
+  letterSpacing: 0.5,
+  textTransform: "uppercase" as const,
+};
+
 export function GradientButton({
   label,
   onPress,
@@ -441,42 +458,35 @@ export function GradientButton({
       }}
     >
       <Animated.View style={{ transform: [{ scale }] }}>
-        <LinearGradient
-          colors={colors || [THEME.primary, "#B91C4A"]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 0 }}
+        {/* Nimbus accent button: flat gold, sharp corners, black text */}
+        <View
           style={[
             {
-              borderRadius: 10,
+              backgroundColor: colors?.[0] || color.accent,
               paddingVertical: 16,
               flexDirection: "row",
               alignItems: "center",
               justifyContent: "center",
             },
-            shadowStyles.card,
             style,
           ]}
         >
           {loading ? (
-            <Text style={{ color: "#FFF", fontSize: 16, fontWeight: "bold" }}>
-              ...
-            </Text>
+            <Text style={btnTextStyle}>...</Text>
           ) : (
             <>
               {icon && (
                 <FontAwesome
                   name={icon as any}
-                  size={16}
-                  color="#FFF"
+                  size={14}
+                  color="#000"
                   style={{ marginRight: 8 }}
                 />
               )}
-              <Text style={{ color: "#FFF", fontSize: 16, fontWeight: "bold" }}>
-                {label}
-              </Text>
+              <Text style={btnTextStyle}>{label}</Text>
             </>
           )}
-        </LinearGradient>
+        </View>
       </Animated.View>
     </TouchableOpacity>
   );

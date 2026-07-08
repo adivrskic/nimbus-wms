@@ -54,21 +54,21 @@ import { haptic } from "../lib/ui";
 
 // Mirrors the relevant slice of the Nimbus light tokens. We don't read
 // from useTheme() here because §8.5 wants auth chrome consistent
-// regardless of system state.
+// regardless of system state. Values = desktop light theme (warm cream).
 const L = {
-  bg: color.white, // #ffffff
-  bgElevated: "#fafafa",
-  text: color.nearBlack, // #0a0a0a
-  textMuted: "#6b6b6b",
-  textDim: "#9a9a9a",
-  border: "rgba(0,0,0,0.10)",
-  borderSubtle: "rgba(0,0,0,0.06)",
-  borderHover: "rgba(0,0,0,0.20)",
+  bg: color.cream.bg, // #f5efde
+  bgElevated: color.cream.surface, // #fdfaf0
+  text: color.cream.ink, // #1a1612
+  textMuted: color.cream.inkMuted,
+  textDim: color.cream.inkDim,
+  border: color.cream.border,
+  borderSubtle: color.cream.borderSubtle,
+  borderHover: color.cream.borderHover,
   accent: color.accent, // #d4a853
-  accentDim: "rgba(212,168,83,0.10)",
-  accentBright: "#e0b970",
-  danger: "#c53030",
-  surface2: "rgba(0,0,0,0.03)",
+  accentDim: color.accentDim,
+  accentBright: color.accentBright, // #e7c074
+  danger: color.semanticOnLight.danger, // #b91c1c — deepened for cream
+  surface2: color.cream.surface2,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

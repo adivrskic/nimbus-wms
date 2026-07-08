@@ -23,10 +23,12 @@ export type Permissions = {
 
 export function usePermissions(): Permissions {
   const { userRole } = useWarehouse();
-  const role = userRole || "staff";
+  const role = userRole || "member";
 
-  const isSuperAdmin = role === "super_admin";
-  const isManager = role === "manager";
+  // Desktop org roles: owner / admin / member (app.org_members.role).
+  // Legacy mobile names (super_admin / manager / staff) still map for safety.
+  const isSuperAdmin = role === "owner" || role === "super_admin";
+  const isManager = role === "admin" || role === "manager";
 
   return {
     role,

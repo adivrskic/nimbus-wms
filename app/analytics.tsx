@@ -27,31 +27,19 @@ const TABS: { key: Tab; label: string }[] = [
   { key: "operations", label: "Operations" },
 ];
 
-const CATEGORY_LABELS: Record<string, string> = {
-  hardwood: "Hardwood",
-  laminate: "Laminate",
-  vinyl_lvp: "Vinyl/LVP",
-  tile: "Tile",
-  carpet: "Carpet",
-  underlayment: "Underlay",
-  adhesive: "Adhesive",
-  trim_molding: "Trim",
-  tools: "Tools",
-  accessories: "Accessories",
-  other: "Other",
-};
 const ACTION_CONFIG: Record<
   string,
   { label: string; color: string; icon: IconName }
 > = {
-  register: { label: "Registered", color: "#22C55E", icon: "plus" },
-  locate: { label: "Located", color: "#1565C0", icon: "search" },
-  relocate: { label: "Relocated", color: "#F57C00", icon: "move" },
-  pick: { label: "Picked", color: "#6A1B9A", icon: "package" },
-  receive: { label: "Received", color: "#00838F", icon: "truck" },
-  return: { label: "Returned", color: "#D32F2F", icon: "rotate-ccw" },
-  cycle_count: { label: "Counted", color: "#4E342E", icon: "check" },
-  adjust: { label: "Adjusted", color: "#37474F", icon: "sliders" },
+  // Nimbus palette only: semantic colors + gold family + grays.
+  register: { label: "Registered", color: "#22c55e", icon: "plus" },
+  locate: { label: "Located", color: "#60a5fa", icon: "search" },
+  relocate: { label: "Relocated", color: "#d97706", icon: "move" },
+  pick: { label: "Picked", color: "#d4a853", icon: "package" },
+  receive: { label: "Received", color: "#e7c074", icon: "truck" },
+  return: { label: "Returned", color: "#ef4444", icon: "rotate-ccw" },
+  cycle_count: { label: "Counted", color: "#a3a3a3", icon: "check" },
+  adjust: { label: "Adjusted", color: "#737373", icon: "sliders" },
 };
 
 export default function AnalyticsScreen() {
@@ -143,7 +131,7 @@ export default function AnalyticsScreen() {
     ] = await Promise.all([
       supabase
         .from("locations")
-        .select("product_id, quantity, products(category)")
+        .select("product_id, quantity, products(categories(name))")
         .eq("warehouse_id", warehouseId),
       supabase
         .from("sections")
@@ -189,7 +177,7 @@ export default function AnalyticsScreen() {
     // Category breakdown
     const catMap: Record<string, number> = {};
     allLocs.forEach((l: any) => {
-      const c = l.products?.category || "other";
+      const c = l.products?.categories?.name || "Other";
       catMap[c] = (catMap[c] || 0) + 1;
     });
     setCategoryBreakdown(
@@ -218,7 +206,7 @@ export default function AnalyticsScreen() {
       secStockMap[sec.id] = {
         code: sec.code,
         name: sec.name,
-        color: sec.color || "#999",
+        color: sec.color || "#737373",
         quantity: 0,
         capacity: sec.total_bays * sec.total_levels,
       };
@@ -253,7 +241,7 @@ export default function AnalyticsScreen() {
       supabase
         .from("locations")
         .select(
-          "quantity, products(id, name, barcode, category, reorder_point)"
+          "quantity, products(id, name, barcode, categories(name), reorder_point)"
         )
         .eq("warehouse_id", warehouseId)
         .lte("quantity", 5)
@@ -575,7 +563,7 @@ function OverviewTab({
           categoryBreakdown.map((item: any, i: number) => (
             <BarRow
               key={item.category}
-              label={CATEGORY_LABELS[item.category] || item.category}
+              label={item.category}
               value={item.count}
               max={maxCat}
               color={T.accent}
@@ -634,7 +622,7 @@ function OverviewTab({
           <Card T={T}>
             <View style={s.proportionBar}>
               {actionBreakdown.map((item: any) => {
-                const cfg = ACTION_CONFIG[item.action] || { color: "#999" };
+                const cfg = ACTION_CONFIG[item.action] || { color: "#737373" };
                 const pct =
                   totalActions > 0 ? (item.count / totalActions) * 100 : 0;
                 return (
@@ -651,7 +639,7 @@ function OverviewTab({
             {actionBreakdown.map((item: any) => {
               const cfg = ACTION_CONFIG[item.action] || {
                 label: item.action,
-                color: "#999",
+                color: "#737373",
                 icon: "circle",
               };
               const pct =
@@ -749,7 +737,7 @@ function InventoryTab({
                   {item.products?.name || "Unknown"}
                 </Text>
                 <Text style={[s.listSub, { color: T.textMuted }]}>
-                  {item.products?.category?.replace("_", "/").toUpperCase()}{" "}
+                  {item.products?.categories?.name?.toUpperCase()}{" "}
                   {"\u2022"} {item.products?.barcode}
                 </Text>
               </View>
@@ -989,7 +977,7 @@ function ActivityTab({
           {recentActivity.map((item: any, index: number) => {
             const cfg = ACTION_CONFIG[item.action] || {
               label: item.action,
-              color: "#999",
+              color: "#737373",
               icon: "circle",
             };
             const time = new Date(item.scanned_at);
@@ -1063,25 +1051,27 @@ function ActivityTab({
 // OPERATIONS TAB
 // ============================================================
 function OperationsTab({ T, ordersByStatus, posByStatus, returnStats }: any) {
+  // Nimbus palette only — status dots use the same badge tones as desktop:
+  // gray (neutral), warning, info, gold (active), success, danger.
   const STATUS_COLORS: Record<string, string> = {
-    created: "#64748B",
-    pending: "#F59E0B",
-    assigned: "#3B82F6",
-    in_progress: "#8B5CF6",
-    picked: "#6366F1",
-    packed: "#0EA5E9",
-    shipped: "#22C55E",
-    delivered: "#16A34A",
-    cancelled: "#EF4444",
-    draft: "#94A3B8",
-    submitted: "#3B82F6",
-    partial: "#F59E0B",
-    received: "#22C55E",
-    closed: "#64748B",
-    restock: "#22C55E",
-    discount: "#F59E0B",
-    dispose: "#EF4444",
-    return_to_supplier: "#3B82F6",
+    created: "#737373",
+    pending: "#d97706",
+    assigned: "#60a5fa",
+    in_progress: "#d4a853",
+    picked: "#e7c074",
+    packed: "#60a5fa",
+    shipped: "#22c55e",
+    delivered: "#22c55e",
+    cancelled: "#ef4444",
+    draft: "#a3a3a3",
+    submitted: "#60a5fa",
+    partial: "#d97706",
+    received: "#22c55e",
+    closed: "#737373",
+    restock: "#22c55e",
+    discount: "#d97706",
+    dispose: "#ef4444",
+    return_to_supplier: "#60a5fa",
   };
 
   const totalOrders = ordersByStatus.reduce(
@@ -1113,7 +1103,7 @@ function OperationsTab({ T, ordersByStatus, posByStatus, returnStats }: any) {
               <View
                 style={[
                   s.statusDot,
-                  { backgroundColor: STATUS_COLORS[item.status] || "#999" },
+                  { backgroundColor: STATUS_COLORS[item.status] || "#737373" },
                 ]}
               />
               <Text
@@ -1163,7 +1153,7 @@ function OperationsTab({ T, ordersByStatus, posByStatus, returnStats }: any) {
               <View
                 style={[
                   s.statusDot,
-                  { backgroundColor: STATUS_COLORS[item.status] || "#999" },
+                  { backgroundColor: STATUS_COLORS[item.status] || "#737373" },
                 ]}
               />
               <Text
@@ -1211,7 +1201,7 @@ function OperationsTab({ T, ordersByStatus, posByStatus, returnStats }: any) {
                 style={[
                   s.statusDot,
                   {
-                    backgroundColor: STATUS_COLORS[item.disposition] || "#999",
+                    backgroundColor: STATUS_COLORS[item.disposition] || "#737373",
                   },
                 ]}
               />

@@ -57,24 +57,12 @@ import { useOffline } from "../../lib/offline";
 import { supabase } from "../../lib/supabase";
 import { useTheme } from "../../lib/theme";
 import { haptic } from "../../lib/ui";
+import { useCategories } from "../../lib/categories";
 import { useWarehouse } from "../../lib/warehouse";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TYPES — mirror the actual nimbus-wms schema (not types/db.ts, which is stale)
 // ─────────────────────────────────────────────────────────────────────────────
-
-type ProductCategory =
-  | "hardwood"
-  | "laminate"
-  | "vinyl_lvp"
-  | "tile"
-  | "carpet"
-  | "underlayment"
-  | "adhesive"
-  | "trim_molding"
-  | "tools"
-  | "accessories"
-  | "other";
 
 interface SectionRef {
   code: string | null;
@@ -95,7 +83,8 @@ interface Product {
   name: string;
   barcode: string;
   internal_sku: string | null;
-  category: ProductCategory | null;
+  category_id: string | null;
+  categories: { name: string | null } | null;
   reorder_point: number | null;
   photo_url: string | null;
   created_at: string | null;
@@ -114,21 +103,6 @@ type SortOption =
 // ─────────────────────────────────────────────────────────────────────────────
 // CONSTANTS
 // ─────────────────────────────────────────────────────────────────────────────
-
-const CATEGORIES: { value: ProductCategory | "all"; label: string }[] = [
-  { value: "all", label: "ALL" },
-  { value: "hardwood", label: "HARDWOOD" },
-  { value: "laminate", label: "LAMINATE" },
-  { value: "vinyl_lvp", label: "VINYL/LVP" },
-  { value: "tile", label: "TILE" },
-  { value: "carpet", label: "CARPET" },
-  { value: "underlayment", label: "UNDERLAY" },
-  { value: "adhesive", label: "ADHESIVE" },
-  { value: "trim_molding", label: "TRIM" },
-  { value: "tools", label: "TOOLS" },
-  { value: "accessories", label: "ACCESSORIES" },
-  { value: "other", label: "OTHER" },
-];
 
 const SORT_OPTIONS: { value: SortOption; label: string }[] = [
   { value: "newest", label: "Newest first" },
@@ -158,10 +132,8 @@ function primaryLocation(p: Product): string | null {
   return `${code} · Bay ${first.bay ?? "?"} · L${first.level ?? "?"}`;
 }
 
-function categoryLabel(cat: ProductCategory | null): string {
-  if (!cat) return "";
-  const match = CATEGORIES.find((c) => c.value === cat);
-  return match?.label ?? cat.toUpperCase();
+function categoryLabel(p: Product): string {
+  return p.categories?.name?.toUpperCase() ?? "";
 }
 
 function applySort(rows: Product[], sortBy: SortOption): Product[] {
@@ -202,8 +174,18 @@ export default function InventoryScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
+  const { categories } = useCategories();
   const [search, setSearch] = useState("");
   const [activeCategory, setActiveCategory] = useState<string>("all");
+
+  // Org-defined category tabs (app.categories) — "ALL" first.
+  const categoryTabs = useMemo(
+    () => [
+      { value: "all", label: "ALL" },
+      ...categories.map((c) => ({ value: c.id, label: c.name.toUpperCase() })),
+    ],
+    [categories]
+  );
   const [sortBy, setSortBy] = useState<SortOption>("newest");
   const [sortSheetOpen, setSortSheetOpen] = useState(false);
   const [page, setPage] = useState(1);
@@ -216,7 +198,7 @@ export default function InventoryScreen() {
     const { data, error } = await supabase
       .from("products")
       .select(
-        "id, name, barcode, internal_sku, category, reorder_point, photo_url, created_at, updated_at, " +
+        "id, name, barcode, internal_sku, category_id, categories(name), reorder_point, photo_url, created_at, updated_at, " +
           "locations!inner(quantity, bay, level, warehouse_id, sections(code, name, color))"
       )
       .eq("locations.warehouse_id", wh.warehouseId)
@@ -263,7 +245,7 @@ export default function InventoryScreen() {
         p.barcode.toLowerCase().includes(term) ||
         (p.internal_sku ?? "").toLowerCase().includes(term);
       const matchesCategory =
-        activeCategory === "all" || p.category === activeCategory;
+        activeCategory === "all" || p.category_id === activeCategory;
       return matchesSearch && matchesCategory;
     });
     return applySort(list, sortBy);
@@ -334,12 +316,12 @@ export default function InventoryScreen() {
         contentContainerStyle={styles.tabsRow}
         style={{ borderBottomWidth: 1, borderBottomColor: T.borderSubtle }}
       >
-        {CATEGORIES.map((c) => {
+        {categoryTabs.map((c) => {
           const isActive = activeCategory === c.value;
           const count =
             c.value === "all"
               ? products.length
-              : products.filter((p) => p.category === c.value).length;
+              : products.filter((p) => p.category_id === c.value).length;
           return (
             <Pressable
               key={c.value}
@@ -560,11 +542,11 @@ function ProductRow({
             {product.internal_sku ?? product.barcode}
             {loc ? <Text style={{ color: T.textDim }}> · </Text> : null}
             {loc ? <Text style={{ color: T.textMuted }}>{loc}</Text> : null}
-            {product.category ? (
+            {categoryLabel(product) ? (
               <>
                 <Text style={{ color: T.textDim }}> · </Text>
                 <Text style={{ color: T.textDim }}>
-                  {categoryLabel(product.category)}
+                  {categoryLabel(product)}
                 </Text>
               </>
             ) : null}

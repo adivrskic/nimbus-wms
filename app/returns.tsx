@@ -76,7 +76,18 @@ interface ReturnRow {
   reason: string | null;
   created_at: string | null;
   reviewed_at: string | null;
+  restocked_at: string | null;
   products: ProductLite | null;
+}
+
+/** Reviewed restock-disposition returns that haven't been restocked yet. */
+function isRestockable(r: ReturnRow): boolean {
+  return (
+    r.disposition === "restock" &&
+    !!r.reviewed_at &&
+    !r.restocked_at &&
+    !!r.products
+  );
 }
 
 const DISPOSITION_LABEL: Record<Disposition, string> = {
@@ -131,6 +142,7 @@ export default function ReturnsScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [logOpen, setLogOpen] = useState(false);
+  const [restockTarget, setRestockTarget] = useState<ReturnRow | null>(null);
 
   const load = useCallback(async () => {
     if (!wh.warehouseId) return;
@@ -138,7 +150,7 @@ export default function ReturnsScreen() {
     const { data } = await supabase
       .from("returns")
       .select(
-        "id, quantity, disposition, reason, created_at, reviewed_at, " +
+        "id, quantity, disposition, reason, created_at, reviewed_at, restocked_at, " +
           "products(id, name, barcode, internal_sku)"
       )
       .eq("warehouse_id", wh.warehouseId)
@@ -247,7 +259,15 @@ export default function ReturnsScreen() {
         <FlatList
           data={returns}
           keyExtractor={(item) => item.id}
-          renderItem={({ item }) => <ReturnRowItem item={item} theme={T} />}
+          renderItem={({ item }) => (
+            <ReturnRowItem
+              item={item}
+              theme={T}
+              onRestock={
+                isRestockable(item) ? () => setRestockTarget(item) : undefined
+              }
+            />
+          )}
           contentContainerStyle={{ paddingBottom: 140 }}
           refreshControl={
             <RefreshControl
@@ -273,6 +293,17 @@ export default function ReturnsScreen() {
         onClose={() => setLogOpen(false)}
         theme={T}
       />
+
+      <RestockSheet
+        target={restockTarget}
+        warehouseId={wh.warehouseId}
+        onDone={() => {
+          setRestockTarget(null);
+          load();
+        }}
+        onClose={() => setRestockTarget(null)}
+        theme={T}
+      />
     </View>
   );
 }
@@ -284,9 +315,11 @@ export default function ReturnsScreen() {
 function ReturnRowItem({
   item,
   theme: T,
+  onRestock,
 }: {
   item: ReturnRow;
   theme: ReturnType<typeof useTheme>;
+  onRestock?: () => void;
 }) {
   const tone = dispositionTone(item.disposition, T);
   return (
@@ -355,8 +388,247 @@ function ReturnRowItem({
             {item.reason}
           </Text>
         ) : null}
+        {item.restocked_at ? (
+          <Text
+            style={[
+              type.labelSm,
+              { color: T.success, letterSpacing: 1.5, marginTop: 6 },
+            ]}
+          >
+            RESTOCKED · {formatRelative(item.restocked_at)}
+          </Text>
+        ) : null}
+        {onRestock ? (
+          <Pressable
+            onPress={() => {
+              haptic.light();
+              onRestock();
+            }}
+            style={({ pressed }) => [
+              styles.restockBtn,
+              {
+                borderColor: T.accent,
+                backgroundColor: pressed ? T.accentDim : "transparent",
+              },
+            ]}
+          >
+            <Text style={[type.labelSm, { color: T.accent, letterSpacing: 1.5 }]}>
+              RESTOCK TO INVENTORY →
+            </Text>
+          </Pressable>
+        ) : null}
       </View>
     </View>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RESTOCK SHEET — pick a destination location, credit stock atomically via
+// the app.restock_return RPC (locks return + location; audits scan_history).
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface RestockLocation {
+  id: string;
+  bay: number | null;
+  level: number | null;
+  quantity: number | null;
+  quarantined: boolean | null;
+  is_active: boolean | null;
+  product_id: string | null;
+  sections: { code: string | null; name: string | null } | null;
+}
+
+function RestockSheet({
+  target,
+  warehouseId,
+  onDone,
+  onClose,
+  theme: T,
+}: {
+  target: ReturnRow | null;
+  warehouseId: string | null;
+  onDone: () => void;
+  onClose: () => void;
+  theme: ReturnType<typeof useTheme>;
+}) {
+  const insets = useSafeAreaInsets();
+  const { orgId, userId } = useWarehouse();
+  const [locations, setLocations] = useState<RestockLocation[]>([]);
+  const [loadingLocs, setLoadingLocs] = useState(false);
+  const [qty, setQty] = useState(1);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!target?.products || !warehouseId) return;
+    setQty(target.quantity);
+    setLoadingLocs(true);
+    (async () => {
+      // Destination candidates: this product's active, unquarantined slots
+      // at the facility, plus empty slots the RPC can claim.
+      const { data } = await supabase
+        .from("locations")
+        .select(
+          "id, bay, level, quantity, quarantined, is_active, product_id, sections(code, name)"
+        )
+        .eq("warehouse_id", warehouseId)
+        .eq("is_active", true)
+        .eq("quarantined", false)
+        .or(`product_id.eq.${target.products!.id},product_id.is.null`)
+        .order("quantity", { ascending: false })
+        .limit(30);
+      setLocations((data as unknown as RestockLocation[]) ?? []);
+      setLoadingLocs(false);
+    })();
+  }, [target, warehouseId]);
+
+  async function restockTo(locationId: string) {
+    if (!target || !orgId || !userId || saving) return;
+    setSaving(true);
+    haptic.medium();
+    const { data, error } = await supabase.rpc("restock_return", {
+      p_org_id: orgId,
+      p_return_id: target.id,
+      p_location_id: locationId,
+      p_qty: qty,
+      p_by: userId,
+    });
+    setSaving(false);
+    const r = (data ?? {}) as { ok?: boolean; error?: string };
+    if (error || !r.ok) {
+      const code = error?.message ?? r.error ?? "unknown";
+      const friendly: Record<string, string> = {
+        already_restocked: "This return was already restocked.",
+        not_restockable:
+          "This return needs a desk review sign-off (disposition: restock) first.",
+        location_unavailable: "That slot is quarantined or inactive.",
+        location_holds_other_product: "That slot holds a different product.",
+        warehouse_mismatch: "That slot is in a different facility.",
+        invalid_qty: "Quantity exceeds the returned amount.",
+      };
+      Alert.alert("Couldn't restock", friendly[code] ?? code);
+      return;
+    }
+    haptic.success();
+    onDone();
+  }
+
+  return (
+    <Modal
+      visible={!!target}
+      animationType="slide"
+      transparent
+      onRequestClose={onClose}
+    >
+      <View style={[styles.sheetBackdrop, { backgroundColor: T.modalBackdrop }]}>
+        <View
+          style={[
+            styles.sheetBody,
+            {
+              backgroundColor: T.bgElevated,
+              borderTopColor: T.borderSubtle,
+              paddingBottom: insets.bottom + 24,
+            },
+          ]}
+        >
+          <Text style={[type.label, { color: T.accent, letterSpacing: 2 }]}>
+            RESTOCK RETURN
+          </Text>
+          <Text style={[type.bodyLg, { color: T.text, marginTop: 8 }]}>
+            {target?.products?.name}
+          </Text>
+
+          {/* Quantity stepper (partial restock allowed) */}
+          <View style={styles.restockQtyRow}>
+            <Text style={[type.labelSm, { color: T.textMuted }]}>QTY</Text>
+            <View style={styles.restockQtyControls}>
+              <Pressable
+                onPress={() => {
+                  haptic.light();
+                  setQty((q) => Math.max(1, q - 1));
+                }}
+                style={[styles.restockQtyBtn, { borderColor: T.borderSubtle }]}
+              >
+                <Icon name="minus" size={14} color={T.textMuted} />
+              </Pressable>
+              <Text style={[type.monoBody, { color: T.text, minWidth: 36, textAlign: "center" }]}>
+                {qty}
+              </Text>
+              <Pressable
+                onPress={() => {
+                  haptic.light();
+                  setQty((q) => Math.min(target?.quantity ?? q, q + 1));
+                }}
+                style={[styles.restockQtyBtn, { borderColor: T.borderSubtle }]}
+              >
+                <Icon name="plus" size={14} color={T.accent} />
+              </Pressable>
+            </View>
+            <Text style={[type.monoSm, { color: T.textDim }]}>
+              of {target?.quantity}
+            </Text>
+          </View>
+
+          <Text
+            style={[
+              type.labelSm,
+              { color: T.textMuted, letterSpacing: 1.5, marginTop: 16 },
+            ]}
+          >
+            DESTINATION SLOT
+          </Text>
+          {loadingLocs ? (
+            <ActivityIndicator
+              color={T.accent}
+              size="small"
+              style={{ marginTop: 16 }}
+            />
+          ) : locations.length === 0 ? (
+            <Text style={[type.bodySm, { color: T.textMuted, marginTop: 12 }]}>
+              No eligible slots at this facility.
+            </Text>
+          ) : (
+            <ScrollView style={{ maxHeight: 280, marginTop: 8 }}>
+              {locations.map((loc) => (
+                <Pressable
+                  key={loc.id}
+                  disabled={saving}
+                  onPress={() => restockTo(loc.id)}
+                  style={({ pressed }) => [
+                    styles.restockLocRow,
+                    {
+                      borderBottomColor: T.borderFaint,
+                      backgroundColor: pressed ? T.surface2 : "transparent",
+                    },
+                  ]}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={[type.monoBody, { color: T.text }]}>
+                      {loc.sections?.code ?? "?"} · Bay {loc.bay ?? "?"} · L
+                      {loc.level ?? "?"}
+                    </Text>
+                    <Text style={[type.monoSm, { color: T.textMuted }]}>
+                      {loc.product_id
+                        ? `holds ${loc.quantity ?? 0} on hand`
+                        : "empty slot"}
+                    </Text>
+                  </View>
+                  <Icon name="chevron-right" size={14} color={T.textDim} />
+                </Pressable>
+              ))}
+            </ScrollView>
+          )}
+
+          <Pressable
+            onPress={onClose}
+            style={[styles.restockCancel, { borderColor: T.borderSubtle }]}
+          >
+            <Text style={[type.label, { color: T.textMuted, letterSpacing: 2 }]}>
+              CANCEL
+            </Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -398,7 +670,9 @@ function LogReturnSheet({
 }) {
   const insets = useSafeAreaInsets();
 
-  const [orgId, setOrgId] = useState<string | null>(null);
+  // Org of the active warehouse (users can belong to several orgs).
+  const { orgId: activeOrgId } = useWarehouse();
+  const orgId = activeOrgId || null;
   const [code, setCode] = useState("");
   const [lookupTried, setLookupTried] = useState(false);
   const [product, setProduct] = useState<ProductLite | null>(null);
@@ -407,22 +681,6 @@ function LogReturnSheet({
   const [disposition, setDisposition] = useState<Disposition>("restock");
   const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
-
-  // Fetch user's org_id once
-  useEffect(() => {
-    if (!open || orgId) return;
-    (async () => {
-      const { data: u } = await supabase.auth.getUser();
-      if (!u?.user) return;
-      const { data: m } = await supabase
-        .from("org_members")
-        .select("org_id")
-        .eq("user_id", u.user.id)
-        .limit(1)
-        .maybeSingle();
-      if (m?.org_id) setOrgId(m.org_id);
-    })();
-  }, [open, orgId]);
 
   // Reset when opened
   useEffect(() => {
@@ -939,6 +1197,52 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.s24,
     paddingVertical: space.s14,
     marginTop: space.s24,
+  },
+
+  // Restock action + sheet
+  restockBtn: {
+    alignSelf: "flex-start",
+    borderWidth: 1,
+    paddingHorizontal: space.s12,
+    paddingVertical: space.s8,
+    marginTop: space.s8,
+  },
+  sheetBackdrop: { flex: 1, justifyContent: "flex-end" },
+  sheetBody: {
+    borderTopWidth: 1,
+    paddingHorizontal: layout.contentPaddingH,
+    paddingTop: space.s24,
+  },
+  restockQtyRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.s12,
+    marginTop: space.s16,
+  },
+  restockQtyControls: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.s8,
+  },
+  restockQtyBtn: {
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+  },
+  restockLocRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: space.s12,
+    borderBottomWidth: layout.hairlineWidth,
+    gap: space.s12,
+  },
+  restockCancel: {
+    alignItems: "center",
+    paddingVertical: space.s12,
+    borderWidth: 1,
+    marginTop: space.s16,
   },
 });
 

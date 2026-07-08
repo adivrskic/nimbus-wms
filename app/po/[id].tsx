@@ -40,6 +40,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -69,7 +70,10 @@ interface ProductRef {
   name: string;
   barcode: string;
   internal_sku: string | null;
+  track_lots: boolean | null;
 }
+
+type QcStatus = "hold" | "passed" | "failed" | null;
 
 interface PoLineItem {
   id: string;
@@ -79,6 +83,9 @@ interface PoLineItem {
   quantity_expected: number;
   quantity_received: number | null;
   received_at: string | null;
+  lot_number: string | null;
+  qc_status: QcStatus;
+  qc_notes: string | null;
   products: ProductRef | null;
 }
 
@@ -152,6 +159,7 @@ export default function PoDetailScreen() {
   const [po, setPo] = useState<PurchaseOrder | null>(null);
   const [loading, setLoading] = useState(true);
   const [receiveOpen, setReceiveOpen] = useState(false);
+  const [qcReviewingId, setQcReviewingId] = useState<string | null>(null);
 
   const loadPo = useCallback(async () => {
     if (!id) return;
@@ -160,7 +168,7 @@ export default function PoDetailScreen() {
       .from("purchase_orders")
       .select(
         "id, po_number, status, supplier_name, supplier_contact, expected_date, notes, warehouse_id, org_id, created_at, updated_at, " +
-          "po_line_items(id, product_id, product_name, barcode, quantity_expected, quantity_received, received_at, products(id, name, barcode, internal_sku))"
+          "po_line_items(id, product_id, product_name, barcode, quantity_expected, quantity_received, received_at, lot_number, qc_status, qc_notes, products(id, name, barcode, internal_sku, track_lots))"
       )
       .eq("id", id)
       .single();
@@ -210,6 +218,67 @@ export default function PoDetailScreen() {
     );
   }
 
+  /**
+   * QC disposition — mirrors desktop reviewQcLine ordering: release/kill the
+   * quarantined stock FIRST (while the line still reads 'hold'), then stamp
+   * the line. PASS un-quarantines the held location rows; FAIL deactivates
+   * them (soft-delete pending vendor return).
+   */
+  async function reviewQc(item: PoLineItem, decision: "passed" | "failed") {
+    if (!po || item.qc_status !== "hold" || qcReviewingId) return;
+    setQcReviewingId(item.id);
+    haptic.medium();
+    try {
+      const { data: u } = await supabase.auth.getUser();
+      const userId = u?.user?.id ?? null;
+
+      const locPatch =
+        decision === "passed" ? { quarantined: false } : { is_active: false };
+      const { error: locErr } = await supabase
+        .from("locations")
+        .update(locPatch)
+        .eq("po_line_id", item.id)
+        .eq("org_id", po.org_id)
+        .eq("quarantined", true);
+      if (locErr) throw locErr;
+
+      const { error: lineErr } = await supabase
+        .from("po_line_items")
+        .update({
+          qc_status: decision,
+          qc_at: new Date().toISOString(),
+          qc_by: userId,
+        })
+        .eq("id", item.id);
+      if (lineErr) throw lineErr;
+
+      haptic.success();
+      loadPo();
+    } catch (e: any) {
+      Alert.alert("QC review failed", e?.message ?? "Try again.");
+    } finally {
+      setQcReviewingId(null);
+    }
+  }
+
+  function confirmQc(item: PoLineItem, decision: "passed" | "failed") {
+    haptic.light();
+    Alert.alert(
+      decision === "passed" ? "Pass QC?" : "Fail QC?",
+      decision === "passed"
+        ? `Release held stock for "${displayName(item)}" into available inventory.`
+        : `Reject "${displayName(item)}" — held stock is deactivated for vendor return.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: decision === "passed" ? "Pass" : "Fail",
+          style: decision === "failed" ? "destructive" : "default",
+          onPress: () => reviewQc(item, decision),
+        },
+      ]
+    );
+  }
+
   if (loading || !po) {
     return (
       <View style={[styles.screen, { backgroundColor: T.bg }]}>
@@ -225,10 +294,12 @@ export default function PoDetailScreen() {
     );
   }
 
+  // canAdjustQuantity: receiving increments on-hand; `canEdit` never existed
+  // on Permissions, so these gates silently hid receiving for every role.
   const canReceive =
-    perms?.canEdit && isReceivable(po.status) && totals.lines > 0;
+    perms?.canAdjustQuantity && isReceivable(po.status) && totals.lines > 0;
   const canCancel =
-    perms?.canEdit &&
+    perms?.canEditProducts &&
     po.status !== "fully_received" &&
     po.status !== "cancelled";
 
@@ -360,7 +431,67 @@ export default function PoDetailScreen() {
                       {item.products?.internal_sku ??
                         item.barcode ??
                         "no barcode"}
+                      {item.lot_number ? ` · LOT ${item.lot_number}` : ""}
                     </Text>
+                    {item.qc_status ? (
+                      <View style={styles.qcRow}>
+                        <Text
+                          style={[
+                            type.labelSm,
+                            {
+                              letterSpacing: 1.5,
+                              color:
+                                item.qc_status === "hold"
+                                  ? T.warning
+                                  : item.qc_status === "passed"
+                                  ? T.success
+                                  : T.danger,
+                            },
+                          ]}
+                        >
+                          QC ·{" "}
+                          {item.qc_status === "hold"
+                            ? "ON HOLD"
+                            : item.qc_status.toUpperCase()}
+                        </Text>
+                        {item.qc_status === "hold" &&
+                        perms?.canEditProducts ? (
+                          <View style={styles.qcActions}>
+                            <Pressable
+                              disabled={qcReviewingId === item.id}
+                              onPress={() => confirmQc(item, "passed")}
+                              style={[
+                                styles.qcBtn,
+                                { borderColor: T.success },
+                              ]}
+                            >
+                              <Text
+                                style={[
+                                  type.labelSm,
+                                  { color: T.success, letterSpacing: 1.5 },
+                                ]}
+                              >
+                                PASS
+                              </Text>
+                            </Pressable>
+                            <Pressable
+                              disabled={qcReviewingId === item.id}
+                              onPress={() => confirmQc(item, "failed")}
+                              style={[styles.qcBtn, { borderColor: T.danger }]}
+                            >
+                              <Text
+                                style={[
+                                  type.labelSm,
+                                  { color: T.danger, letterSpacing: 1.5 },
+                                ]}
+                              >
+                                FAIL
+                              </Text>
+                            </Pressable>
+                          </View>
+                        ) : null}
+                      </View>
+                    ) : null}
                   </View>
                   <View style={styles.lineQty}>
                     <Text
@@ -627,6 +758,9 @@ function ReceiveRunSheet({
 }) {
   const insets = useSafeAreaInsets();
   const [receivingId, setReceivingId] = useState<string | null>(null);
+  // Lot-tracked lines detour through this overlay to capture lot + expiry
+  // before the receive writes (mirrors desktop receiveLineItem lot capture).
+  const [lotTarget, setLotTarget] = useState<PoLineItem | null>(null);
 
   const totalExpected = items.reduce((s, i) => s + i.quantity_expected, 0);
   const totalReceived = items.reduce((s, i) => s + receivedQty(i), 0);
@@ -634,8 +768,51 @@ function ReceiveRunSheet({
   const remaining = items.filter((i) => !isFullyReceived(i));
   const completed = items.filter(isFullyReceived);
 
-  async function receiveItem(item: PoLineItem) {
+  function receiveItem(item: PoLineItem) {
     if (isFullyReceived(item) || receivingId) return;
+    if (item.products?.track_lots && item.product_id) {
+      haptic.light();
+      setLotTarget(item);
+      return;
+    }
+    void commitReceive(item, null);
+  }
+
+  /** Find-or-create the lot for this org+product, mirroring desktop. */
+  async function resolveLot(
+    item: PoLineItem,
+    lot: { number: string; expiry: string | null },
+    userId: string | null
+  ): Promise<string | null> {
+    const { data: existing } = await supabase
+      .from("lots")
+      .select("id")
+      .eq("org_id", po.org_id)
+      .eq("product_id", item.product_id!)
+      .eq("lot_number", lot.number)
+      .maybeSingle();
+    if (existing?.id) return existing.id;
+    const { data: created, error } = await supabase
+      .from("lots")
+      .insert({
+        org_id: po.org_id,
+        product_id: item.product_id,
+        lot_number: lot.number,
+        expires_at: lot.expiry,
+        received_at: new Date().toISOString(),
+        created_by: userId,
+      })
+      .select("id")
+      .single();
+    if (error) throw error;
+    return created?.id ?? null;
+  }
+
+  async function commitReceive(
+    item: PoLineItem,
+    lot: { number: string; expiry: string | null } | null
+  ) {
+    setLotTarget(null);
     setReceivingId(item.id);
     haptic.medium();
     try {
@@ -643,12 +820,20 @@ function ReceiveRunSheet({
       const userId = u?.user?.id ?? null;
       const now = new Date().toISOString();
 
+      let lotId: string | null = null;
+      if (lot?.number) {
+        lotId = await resolveLot(item, lot, userId);
+      }
+
       const { error: itemErr } = await supabase
         .from("po_line_items")
         .update({
           quantity_received: item.quantity_expected,
           received_by: userId,
           received_at: now,
+          ...(lotId
+            ? { lot_id: lotId, lot_number: lot!.number }
+            : {}),
         })
         .eq("id", item.id);
       if (itemErr) throw itemErr;
@@ -859,8 +1044,172 @@ function ReceiveRunSheet({
             </Pressable>
           </View>
         ) : null}
+
+        {lotTarget ? (
+          <LotCaptureOverlay
+            item={lotTarget}
+            theme={T}
+            onSubmit={(lot) => void commitReceive(lotTarget, lot)}
+            onSkip={() => void commitReceive(lotTarget, null)}
+            onCancel={() => setLotTarget(null)}
+          />
+        ) : null}
       </View>
     </Modal>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LOT CAPTURE OVERLAY — lot number + optional expiry for lot-tracked products.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function LotCaptureOverlay({
+  item,
+  theme: T,
+  onSubmit,
+  onSkip,
+  onCancel,
+}: {
+  item: PoLineItem;
+  theme: ReturnType<typeof useTheme>;
+  onSubmit: (lot: { number: string; expiry: string | null }) => void;
+  onSkip: () => void;
+  onCancel: () => void;
+}) {
+  const insets = useSafeAreaInsets();
+  const [lotNumber, setLotNumber] = useState(item.lot_number ?? "");
+  const [expiry, setExpiry] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  function submit() {
+    const num = lotNumber.trim();
+    if (!num) {
+      setError("Lot number is required (or skip lot capture).");
+      return;
+    }
+    const exp = expiry.trim();
+    if (exp && !/^\d{4}-\d{2}-\d{2}$/.test(exp)) {
+      setError("Expiry must be YYYY-MM-DD (or left blank).");
+      return;
+    }
+    haptic.medium();
+    onSubmit({ number: num, expiry: exp || null });
+  }
+
+  return (
+    <View style={[styles.lotWrap, { backgroundColor: T.bg }]}>
+      <View
+        style={[
+          styles.runTopBar,
+          {
+            borderBottomColor: T.borderSubtle,
+            paddingTop: insets.top || space.s16,
+          },
+        ]}
+      >
+        <Pressable onPress={onCancel} hitSlop={10} accessibilityLabel="Cancel">
+          <Text style={[type.label, { color: T.textMuted, letterSpacing: 2 }]}>
+            CANCEL
+          </Text>
+        </Pressable>
+        <Text style={[type.label, { color: T.accent, letterSpacing: 2 }]}>
+          LOT CAPTURE
+        </Text>
+        <View style={{ width: 48 }} />
+      </View>
+
+      <View style={{ padding: layout.contentPaddingH, gap: space.s12 }}>
+        <Text style={[type.bodyLg, { color: T.text }]} numberOfLines={2}>
+          {displayName(item)}
+        </Text>
+        <Text style={[type.monoSm, { color: T.textMuted }]}>
+          This product is lot-tracked — record the supplier lot before
+          receiving {item.quantity_expected} unit
+          {item.quantity_expected === 1 ? "" : "s"}.
+        </Text>
+
+        <View
+          style={[
+            styles.lotField,
+            { borderColor: T.borderSubtle, backgroundColor: T.surface2 },
+          ]}
+        >
+          <Text style={[type.labelSm, { color: T.textMuted, letterSpacing: 1.5 }]}>
+            LOT NUMBER
+          </Text>
+          <TextInput
+            value={lotNumber}
+            onChangeText={(v) => {
+              setLotNumber(v);
+              setError(null);
+            }}
+            placeholder="e.g. L-240701-A"
+            placeholderTextColor={T.textDim}
+            autoCapitalize="characters"
+            autoCorrect={false}
+            style={[type.monoBody, { color: T.text, padding: 0, marginTop: 6 }]}
+          />
+        </View>
+
+        <View
+          style={[
+            styles.lotField,
+            { borderColor: T.borderSubtle, backgroundColor: T.surface2 },
+          ]}
+        >
+          <Text style={[type.labelSm, { color: T.textMuted, letterSpacing: 1.5 }]}>
+            EXPIRY · OPTIONAL
+          </Text>
+          <TextInput
+            value={expiry}
+            onChangeText={(v) => {
+              setExpiry(v);
+              setError(null);
+            }}
+            placeholder="YYYY-MM-DD"
+            placeholderTextColor={T.textDim}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="numbers-and-punctuation"
+            style={[type.monoBody, { color: T.text, padding: 0, marginTop: 6 }]}
+          />
+        </View>
+
+        {error ? (
+          <View
+            style={[
+              styles.lotError,
+              { borderLeftColor: T.danger, backgroundColor: T.dangerDim },
+            ]}
+          >
+            <Text style={[type.monoSm, { color: T.danger }]}>{error}</Text>
+          </View>
+        ) : null}
+
+        <Pressable
+          onPress={submit}
+          style={({ pressed }) => [
+            styles.lotSubmit,
+            { backgroundColor: pressed ? T.accentBright : T.accent },
+          ]}
+        >
+          <Text style={[type.label, { color: "#000", letterSpacing: 2 }]}>
+            RECEIVE WITH LOT
+          </Text>
+        </Pressable>
+        <Pressable
+          onPress={() => {
+            haptic.light();
+            onSkip();
+          }}
+          style={[styles.lotSkip, { borderColor: T.borderSubtle }]}
+        >
+          <Text style={[type.labelSm, { color: T.textMuted, letterSpacing: 1.5 }]}>
+            RECEIVE WITHOUT LOT
+          </Text>
+        </Pressable>
+      </View>
+    </View>
   );
 }
 
@@ -1068,6 +1417,45 @@ const styles = StyleSheet.create({
     alignItems: "flex-end",
     minWidth: 60,
   },
+  // QC disposition
+  qcRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: space.s6,
+  },
+  qcActions: { flexDirection: "row", gap: space.s8 },
+  qcBtn: {
+    borderWidth: 1,
+    paddingHorizontal: space.s12,
+    paddingVertical: space.s4,
+  },
+
+  // Lot capture overlay
+  lotWrap: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 10,
+  },
+  lotField: {
+    borderWidth: 1,
+    paddingHorizontal: space.s12,
+    paddingVertical: space.s8,
+  },
+  lotError: {
+    borderLeftWidth: 4,
+    padding: space.s12,
+  },
+  lotSubmit: {
+    alignItems: "center",
+    paddingVertical: space.s14,
+    marginTop: space.s8,
+  },
+  lotSkip: {
+    alignItems: "center",
+    paddingVertical: space.s12,
+    borderWidth: 1,
+  },
+
   runCtaBar: {
     position: "absolute",
     bottom: 0,

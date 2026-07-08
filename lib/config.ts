@@ -24,20 +24,22 @@ export const APP_CONFIG = {
   clientLogo: require("../assets/logo.webp"),
 
   // ----------------------------------------------------------
-  // Theme colors (changes per customer)
+  // Theme colors — Nimbus dark palette. Kept only for legacy
+  // consumers (lib/ui.tsx, lib/offlineUI.tsx); new code should
+  // read from useTheme() / lib/nimbus/tokens instead.
   // ----------------------------------------------------------
   theme: {
-    primary: "#93143A",
-    secondary: "#22234F",
-    background: "#F9F9F9",
-    surface: "#FFFFFF",
-    textPrimary: "#22234F",
-    textSecondary: "#999999",
-    border: "#EEEEEE",
-    borderInput: "#DDDDDD",
-    success: "#2E7D32",
-    warning: "#E65100",
-    danger: "#C62828",
+    primary: "#d4a853", // gold accent
+    secondary: "#a3a3a3", // gray-2
+    background: "#000000",
+    surface: "#0a0a0a",
+    textPrimary: "#ffffff",
+    textSecondary: "#737373",
+    border: "#262626",
+    borderInput: "#262626",
+    success: "#22c55e",
+    warning: "#d97706",
+    danger: "#ef4444",
   },
 };
 

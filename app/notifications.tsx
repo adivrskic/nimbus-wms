@@ -48,6 +48,7 @@ import { useWarehouse } from "../lib/warehouse";
 // ─────────────────────────────────────────────────────────────────────────────
 
 type EventKind =
+  | "notification"
   | "low_stock"
   | "order_late"
   | "order_pending"
@@ -63,6 +64,9 @@ interface FeedEvent {
   timestamp: number; // for sorting
   route?: string;
   iconName: IconName;
+  /** Real app.notifications row id — enables mark-as-read on tap. */
+  notificationId?: string;
+  unread?: boolean;
 }
 
 interface FilterDef {
@@ -73,12 +77,14 @@ interface FilterDef {
 
 const FILTERS: FilterDef[] = [
   { key: "all", label: "ALL", kinds: null },
+  { key: "inbox", label: "INBOX", kinds: ["notification"] },
   { key: "alerts", label: "ALERTS", kinds: ["low_stock", "order_late"] },
   { key: "orders", label: "ORDERS", kinds: ["order_late", "order_pending"] },
   { key: "activity", label: "ACTIVITY", kinds: ["return_logged", "scan"] },
 ];
 
 const KIND_LABEL: Record<EventKind, string> = {
+  notification: "INBOX",
   low_stock: "LOW STOCK",
   order_late: "LATE ORDER",
   order_pending: "ORDER",
@@ -88,6 +94,8 @@ const KIND_LABEL: Record<EventKind, string> = {
 
 function kindTone(kind: EventKind, T: ReturnType<typeof useTheme>): string {
   switch (kind) {
+    case "notification":
+      return T.accent;
     case "low_stock":
       return T.warning;
     case "order_late":
@@ -103,6 +111,8 @@ function kindTone(kind: EventKind, T: ReturnType<typeof useTheme>): string {
 
 function kindIcon(kind: EventKind): IconName {
   switch (kind) {
+    case "notification":
+      return "bell";
     case "low_stock":
       return "alert-circle";
     case "order_late":
@@ -152,7 +162,15 @@ export default function NotificationsScreen() {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const [lowStockRes, ordersRes, returnsRes, scansRes] = await Promise.all([
+    const [notifRes, lowStockRes, ordersRes, returnsRes, scansRes] =
+      await Promise.all([
+      // Real notifications (app.notifications) — written by the desk app's
+      // crons (stockout, lot expiry, cycle-count queue…). User-scoped by RLS.
+      supabase
+        .from("notifications")
+        .select("id, kind, title, body, link, read_at, created_at")
+        .order("created_at", { ascending: false })
+        .limit(50),
       // Low stock — products with sum(qty) <= reorder_point AND reorder_point > 0
       supabase
         .from("products")
@@ -197,6 +215,23 @@ export default function NotificationsScreen() {
     ]);
 
     const out: FeedEvent[] = [];
+
+    // Real notification rows first — they carry read/unread state.
+    if (notifRes.data) {
+      for (const n of notifRes.data as any[]) {
+        out.push({
+          id: `notif-${n.id}`,
+          kind: "notification",
+          title: n.title ?? (n.kind ?? "").replace(/_/g, " ").toUpperCase(),
+          body: n.body ?? "",
+          meta: formatRelative(n.created_at),
+          timestamp: n.created_at ? new Date(n.created_at).getTime() : 0,
+          iconName: kindIcon("notification"),
+          notificationId: n.id,
+          unread: !n.read_at,
+        });
+      }
+    }
 
     // Low stock — aggregate quantities client side and compare to reorder_point
     if (lowStockRes.data) {
@@ -307,6 +342,34 @@ export default function NotificationsScreen() {
     return f.kinds ? events.filter((e) => f.kinds!.includes(e.kind)) : events;
   }, [events, activeFilter]);
 
+  const unreadCount = useMemo(
+    () => events.filter((e) => e.unread).length,
+    [events]
+  );
+
+  async function markRead(event: FeedEvent) {
+    if (!event.notificationId || !event.unread) return;
+    setEvents((prev) =>
+      prev.map((e) => (e.id === event.id ? { ...e, unread: false } : e))
+    );
+    await supabase
+      .from("notifications")
+      .update({ read_at: new Date().toISOString() })
+      .eq("id", event.notificationId)
+      .is("read_at", null);
+  }
+
+  async function markAllRead() {
+    if (unreadCount === 0) return;
+    haptic.medium();
+    setEvents((prev) => prev.map((e) => ({ ...e, unread: false })));
+    await supabase
+      .from("notifications")
+      .update({ read_at: new Date().toISOString() })
+      .eq("user_id", wh.userId)
+      .is("read_at", null);
+  }
+
   return (
     <View style={[styles.screen, { backgroundColor: T.bg }]}>
       <ScreenHeader
@@ -322,6 +385,21 @@ export default function NotificationsScreen() {
           >
             <Icon name="arrow-left" size={18} color={T.text} />
           </Pressable>
+        }
+        trailing={
+          unreadCount > 0 ? (
+            <Pressable
+              onPress={markAllRead}
+              hitSlop={10}
+              accessibilityLabel="Mark all notifications read"
+            >
+              <Text
+                style={[type.labelSm, { color: T.accent, letterSpacing: 1.5 }]}
+              >
+                READ ALL · {unreadCount}
+              </Text>
+            </Pressable>
+          ) : undefined
         }
       />
 
@@ -428,6 +506,7 @@ export default function NotificationsScreen() {
               event={item}
               theme={T}
               onPress={() => {
+                void markRead(item);
                 if (item.route) {
                   haptic.light();
                   router.push(item.route as any);
@@ -467,7 +546,10 @@ function EventRow({
   onPress: () => void;
 }) {
   const tone = kindTone(event.kind, T);
-  const isAlert = event.kind === "low_stock" || event.kind === "order_late";
+  const isAlert =
+    event.kind === "low_stock" ||
+    event.kind === "order_late" ||
+    Boolean(event.unread);
 
   return (
     <Pressable
@@ -490,6 +572,7 @@ function EventRow({
         <View style={styles.rowTop}>
           <Text style={[type.labelSm, { color: tone, letterSpacing: 1.5 }]}>
             {KIND_LABEL[event.kind]}
+            {event.unread ? "  · UNREAD" : ""}
           </Text>
           <Text
             style={[

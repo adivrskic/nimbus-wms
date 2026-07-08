@@ -29,10 +29,13 @@ export const color = {
   gray4: "#404040",
   gray5: "#262626",
   gray6: "#171717",
+  gray7: "#0e0e0e",
 
   // Brand — the one gold. Rationed: ≤3 per screen.
   accent: "#d4a853",
   accentDim: "rgba(212, 168, 83, 0.15)",
+  accentSoft: "rgba(212, 168, 83, 0.55)", // focused-field borders
+  accentGlow: "rgba(212, 168, 83, 0.08)", // ambient glows / focus rings
   accentBright: "#e7c074",
   accentDeep: "#9a7732",
 
@@ -62,6 +65,35 @@ export const color = {
     a4: "rgba(0,0,0,0.12)",
     a6: "rgba(0,0,0,0.60)", // modal backdrop
   },
+
+  // Light mode — warm cream, mirrors the desktop app's [data-theme="light"]
+  // block in app-nimbus1/app/globals.css. Not gray: cream surfaces + warm ink.
+  cream: {
+    bg: "#f5efde", // page background
+    surface: "#fdfaf0", // cards / elevated-1
+    elevated: "#ffffff", // elevated-2 (sheets, popovers)
+    ink: "#1a1612", // primary text — warm near-black
+    inkSecondary: "#3d362e",
+    inkMuted: "#6b6259",
+    inkDim: "#948b80",
+    border: "rgba(26, 22, 18, 0.18)",
+    borderHover: "rgba(26, 22, 18, 0.32)",
+    borderSubtle: "rgba(26, 22, 18, 0.08)",
+    borderFaint: "rgba(26, 22, 18, 0.05)",
+    surface2: "rgba(26, 22, 18, 0.03)",
+    surface3: "rgba(26, 22, 18, 0.06)",
+    glassBg: "rgba(253, 250, 240, 0.85)",
+    glassBorder: "rgba(26, 22, 18, 0.10)",
+    accentDeep: "#8b6a1f", // gold-as-text on cream
+  },
+
+  // Semantic colors deepened for contrast on cream (desktop light-theme values).
+  semanticOnLight: {
+    success: "#15803d",
+    warning: "#b45309",
+    danger: "#b91c1c",
+    info: "#1d4ed8",
+  },
 } as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -74,6 +106,7 @@ export const space = {
   s6: 6,
   s8: 8,
   s12: 12,
+  s14: 14, // half-step used by form rows (po/returns/purchase-orders/scanner)
   s16: 16,
   s20: 20,
   s24: 24,

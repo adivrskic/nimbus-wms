@@ -36,11 +36,10 @@ function RootLayoutNav() {
 
   return (
     <>
-      <Stack>
-        <Stack.Screen name="login" options={{ headerShown: false }} />
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="analytics" options={{ headerShown: false }} />
-        <Stack.Screen name="product/[id]" options={{ headerShown: false }} />
+      {/* Every screen renders its own Nimbus ScreenHeader — the native
+          header is off globally so undeclared routes don't get a second
+          header bar. */}
+      <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="modal" options={{ presentation: "modal" }} />
       </Stack>
       <ConflictModal />

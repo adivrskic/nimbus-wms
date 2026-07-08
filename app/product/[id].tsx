@@ -19,6 +19,12 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ScreenHeader } from "../../lib/nimbus/Header";
 import { Icon } from "../../lib/nimbus/Icon";
 import { color, layout, radius, space, type } from "../../lib/nimbus/tokens";
+import {
+  applyOrQueueAdjustment,
+  fetchReasons,
+  type AdjustmentReason,
+} from "../../lib/adjustments";
+import { useCategories } from "../../lib/categories";
 import { useOffline } from "../../lib/offline";
 import { usePermissions } from "../../lib/permissions";
 import { supabase } from "../../lib/supabase";
@@ -30,8 +36,9 @@ export default function ProductDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const T = useTheme();
-  const { warehouseId } = useWarehouse();
+  const { warehouseId, orgId, userId } = useWarehouse();
   const perms = usePermissions();
+  const { categories } = useCategories();
   const { isOnline, queueOperation } = useOffline();
   const insets = useSafeAreaInsets();
   const [product, setProduct] = useState<any>(null);
@@ -57,6 +64,21 @@ export default function ProductDetailScreen() {
   const [savingEdit, setSavingEdit] = useState(false);
   const [showCategoryPicker, setShowCategoryPicker] = useState(false);
 
+  // Pending qty adjustments (locationId → delta) + governance
+  const [pendingDeltas, setPendingDeltas] = useState<Record<string, number>>(
+    {}
+  );
+  const [adjustReasons, setAdjustReasons] = useState<AdjustmentReason[]>([]);
+  const [adjustReason, setAdjustReason] = useState<AdjustmentReason | null>(
+    null
+  );
+  const [showReasonPicker, setShowReasonPicker] = useState(false);
+  const [applyingAdjust, setApplyingAdjust] = useState(false);
+
+  useEffect(() => {
+    if (orgId) fetchReasons(orgId).then(setAdjustReasons);
+  }, [orgId]);
+
   useEffect(() => {
     loadProduct();
     loadHistory();
@@ -67,7 +89,7 @@ export default function ProductDetailScreen() {
     const { data } = await supabase
       .from("products")
       .select(
-        "*, locations(*, sections(code, name, color, total_bays, total_levels))"
+        "*, categories(name), locations(*, sections(code, name, color, total_bays, total_levels))"
       )
       .eq("id", id)
       .single();
@@ -176,62 +198,98 @@ export default function ProductDetailScreen() {
     loadHistory();
   }
 
+  // Org-defined categories (app.categories) for the edit sheet picker.
   const CATEGORIES = [
-    { value: "hardwood", label: "Hardwood" },
-    { value: "laminate", label: "Laminate" },
-    { value: "vinyl_lvp", label: "Vinyl/LVP" },
-    { value: "tile", label: "Tile" },
-    { value: "carpet", label: "Carpet" },
-    { value: "underlayment", label: "Underlayment" },
-    { value: "adhesive", label: "Adhesive" },
-    { value: "trim_molding", label: "Trim/Molding" },
-    { value: "tools", label: "Tools" },
-    { value: "accessories", label: "Accessories" },
-    { value: "other", label: "Other" },
+    { value: "", label: "None" },
+    ...categories.map((c) => ({ value: c.id, label: c.name })),
   ];
 
-  async function adjustQuantity(locationId: string, delta: number) {
+  /**
+   * Steppers accumulate a PENDING delta per location (desktop SectionDetail
+   * pattern). Nothing writes until Apply, which routes every pending change
+   * through applyOrQueueAdjustment — atomic commit RPC for small deltas,
+   * approval queue for big ones / approval-flagged reasons.
+   */
+  function adjustQuantity(locationId: string, delta: number) {
     const loc = product?.locations?.find((l: any) => l.id === locationId);
     if (!loc) return;
-    haptic.medium();
+    haptic.light();
+    setPendingDeltas((prev) => {
+      const next = { ...prev };
+      const newDelta = (next[locationId] ?? 0) + delta;
+      // Never let the target qty go negative.
+      if ((loc.quantity ?? 0) + newDelta < 0) return prev;
+      if (newDelta === 0) delete next[locationId];
+      else next[locationId] = newDelta;
+      return next;
+    });
+  }
+
+  function revertPending() {
+    haptic.light();
+    setPendingDeltas({});
+  }
+
+  async function applyPending() {
+    if (!product || !orgId || !userId) return;
+    const entries = Object.entries(pendingDeltas).filter(([, d]) => d !== 0);
+    if (entries.length === 0) return;
 
     if (!isOnline) {
-      await queueOperation({
-        type: "adjust",
-        warehouseId: warehouseId || "",
-        payload: { locationId, delta, productId: product.id },
-      });
-      // Optimistic update
-      const newQty = Math.max(0, loc.quantity + delta);
+      // Offline: queue per-location ops for later sync; optimistic UI.
+      for (const [locationId, delta] of entries) {
+        await queueOperation({
+          type: "adjust",
+          warehouseId: warehouseId || "",
+          payload: { locationId, delta, productId: product.id },
+        });
+      }
       setProduct((prev: any) => ({
         ...prev,
-        locations: prev.locations.map((l: any) =>
-          l.id === locationId ? { ...l, quantity: newQty } : l
-        ),
+        locations: prev.locations.map((l: any) => {
+          const d = pendingDeltas[l.id] ?? 0;
+          return d ? { ...l, quantity: Math.max(0, l.quantity + d) } : l;
+        }),
       }));
+      setPendingDeltas({});
       return;
     }
 
-    const newQty = Math.max(0, loc.quantity + delta);
-    const { error } = await supabase
-      .from("locations")
-      .update({ quantity: newQty })
-      .eq("id", locationId);
-    if (error) {
-      Alert.alert("Error", error.message);
-      return;
+    setApplyingAdjust(true);
+    haptic.medium();
+    let queued = 0;
+    let failed: string | null = null;
+    for (const [locationId, delta] of entries) {
+      const loc = product.locations.find((l: any) => l.id === locationId);
+      if (!loc) continue;
+      const result = await applyOrQueueAdjustment({
+        orgId,
+        userId,
+        locationId,
+        warehouseId: loc.warehouse_id ?? warehouseId ?? null,
+        productId: product.id,
+        currentQty: loc.quantity ?? 0,
+        requestedQty: (loc.quantity ?? 0) + delta,
+        reason: adjustReason,
+        notes: null,
+      });
+      if (result.outcome === "queued") queued++;
+      if (result.outcome === "error") failed = result.message;
     }
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    await supabase.from("scan_history").insert({
-      product_id: product.id,
-      warehouse_id: warehouseId,
-      scanned_by: user?.id,
-      action: "adjust",
-      quantity: delta,
-      notes: `${delta > 0 ? "+" : ""}${delta} (${loc.quantity} → ${newQty})`,
-    });
+    setApplyingAdjust(false);
+    setPendingDeltas({});
+    setAdjustReason(null);
+    if (failed) {
+      Alert.alert("Adjustment failed", failed);
+    } else if (queued > 0) {
+      haptic.success();
+      Alert.alert(
+        "Queued for approval",
+        "This change is over your org's approval threshold (or the reason requires sign-off). An admin can approve it from the desktop app."
+      );
+    } else {
+      haptic.success();
+    }
     loadProduct();
     loadHistory();
   }
@@ -239,7 +297,7 @@ export default function ProductDetailScreen() {
   function openEdit() {
     haptic.light();
     setEditName(product.name || "");
-    setEditCategory(product.category || "other");
+    setEditCategory(product.category_id || "");
     setEditWeight(product.weight || "");
     setEditDimensions(product.dimensions || "");
     setEditManufacturer(product.manufacturer || "");
@@ -260,7 +318,7 @@ export default function ProductDetailScreen() {
       .from("products")
       .update({
         name: editName.trim(),
-        category: editCategory,
+        category_id: editCategory || null,
         weight: editWeight.trim() || null,
         dimensions: editDimensions.trim() || null,
         manufacturer: editManufacturer.trim() || null,
@@ -436,9 +494,7 @@ export default function ProductDetailScreen() {
 
   const locations = product.locations || [];
   const primaryLocation = locations[0];
-  const categoryLabel = (product.category || "")
-    .replace("_", "/")
-    .toUpperCase();
+  const categoryLabel = (product.categories?.name || "").toUpperCase();
   const sectionColor = primaryLocation?.sections?.color || color.accent;
   const totalQty = locations.reduce(
     (sum: number, loc: any) => sum + (loc.quantity || 0),
@@ -627,8 +683,15 @@ export default function ProductDetailScreen() {
                   >
                     <Icon name="minus" size={14} color={T.textMuted} />
                   </TouchableOpacity>
-                  <Text style={[s.qtyDisplay, { color: T.text }]}>
-                    {loc.quantity}
+                  <Text
+                    style={[
+                      s.qtyDisplay,
+                      {
+                        color: pendingDeltas[loc.id] ? T.accent : T.text,
+                      },
+                    ]}
+                  >
+                    {(loc.quantity ?? 0) + (pendingDeltas[loc.id] ?? 0)}
                   </Text>
                   <TouchableOpacity
                     style={[
@@ -642,6 +705,115 @@ export default function ProductDetailScreen() {
                 </View>
               </View>
             ))}
+
+          {/* Pending adjustment panel — nothing writes until Apply */}
+          {Object.keys(pendingDeltas).length > 0 && (
+            <View
+              style={[
+                s.card,
+                {
+                  backgroundColor: T.bgElevated,
+                  borderColor: T.accent,
+                  borderLeftWidth: 4,
+                },
+              ]}
+            >
+              <Text style={[type.label, { color: T.accent, marginBottom: 8 }]}>
+                PENDING ADJUSTMENT
+              </Text>
+              {Object.entries(pendingDeltas).map(([locId, delta]) => {
+                const loc = product.locations.find((l: any) => l.id === locId);
+                if (!loc) return null;
+                return (
+                  <Text
+                    key={locId}
+                    style={[type.monoSm, { color: T.textMuted, marginBottom: 4 }]}
+                  >
+                    {loc.sections?.code ?? "?"} · Bay {loc.bay} · L{loc.level}
+                    {"   "}
+                    {loc.quantity} → {(loc.quantity ?? 0) + delta} (
+                    {delta > 0 ? "+" : ""}
+                    {delta})
+                  </Text>
+                );
+              })}
+
+              <TouchableOpacity
+                style={[
+                  s.reasonField,
+                  { borderColor: T.borderSubtle, backgroundColor: T.surface2 },
+                ]}
+                onPress={() => {
+                  haptic.light();
+                  setShowReasonPicker(!showReasonPicker);
+                }}
+              >
+                <Text
+                  style={[
+                    type.monoSm,
+                    { color: adjustReason ? T.text : T.textDim },
+                  ]}
+                >
+                  {adjustReason
+                    ? adjustReason.label
+                    : "Reason (optional)"}
+                </Text>
+                <Icon name="chevron-down" size={13} color={T.textMuted} />
+              </TouchableOpacity>
+              {showReasonPicker && (
+                <View style={[s.reasonList, { borderColor: T.borderSubtle }]}>
+                  {[null, ...adjustReasons].map((r) => (
+                    <TouchableOpacity
+                      key={r?.code ?? "none"}
+                      style={s.reasonOption}
+                      onPress={() => {
+                        haptic.selection();
+                        setAdjustReason(r);
+                        setShowReasonPicker(false);
+                      }}
+                    >
+                      <Text
+                        style={[
+                          type.monoSm,
+                          {
+                            color:
+                              (adjustReason?.code ?? null) ===
+                              (r?.code ?? null)
+                                ? T.accent
+                                : T.textMuted,
+                          },
+                        ]}
+                      >
+                        {r ? r.label : "No reason"}
+                        {r?.requiresApproval ? "  · needs approval" : ""}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
+
+              <View style={{ flexDirection: "row", gap: 10, marginTop: 12 }}>
+                <TouchableOpacity
+                  style={[s.adjustBtn, { borderColor: T.borderSubtle }]}
+                  onPress={revertPending}
+                  disabled={applyingAdjust}
+                >
+                  <Text style={[type.label, { color: T.textMuted }]}>
+                    REVERT
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[s.adjustBtn, { backgroundColor: T.accent }]}
+                  onPress={applyPending}
+                  disabled={applyingAdjust}
+                >
+                  <Text style={[type.label, { color: "#000" }]}>
+                    {applyingAdjust ? "APPLYING…" : "APPLY"}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
 
           {isLowStock && (
             <View style={[s.lowStockBanner, { backgroundColor: T.dangerDim }]}>
@@ -1391,6 +1563,32 @@ const s = StyleSheet.create({
     fontSize: 18,
     minWidth: 36,
     textAlign: "center",
+  },
+
+  // Pending-adjustment panel
+  reasonField: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginTop: 8,
+  },
+  reasonList: {
+    borderWidth: 1,
+    borderTopWidth: 0,
+  },
+  reasonOption: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  adjustBtn: {
+    flex: 1,
+    alignItems: "center",
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: "transparent",
   },
 
   lowStockBanner: {

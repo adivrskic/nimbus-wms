@@ -51,10 +51,11 @@ const DARK = {
 
   bg: color.black,
   bgElevated: color.nearBlack,
-  surface2: color.whiteAlpha.a1, // hover/elevated on dark
-  surface3: "rgba(255,255,255,0.04)",
+  surface2: "rgba(255,255,255,0.02)", // pressed/elevated-1 — desktop --surface-2
+  surface3: "rgba(255,255,255,0.04)", // elevated-2 — desktop --surface-3
 
   text: color.white,
+  // textSecondary lives in the legacy block above (same value on desktop)
   textMuted: color.gray3,
   textDim: color.gray4,
 
@@ -77,58 +78,71 @@ const DARK = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LIGHT — reserved for sign-in / sign-up / forgot-password per §8.5.
-// Gold accent stays the same; dark text on warm light surfaces.
+// LIGHT — warm cream, matching the desktop app's light theme
+// (app-nimbus1/app/globals.css [data-theme="light"]): cream surfaces,
+// warm-ink text, deepened semantic colors for contrast. Same gold accent.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const LIGHT = {
   // Legacy keys
   primary: color.accent,
-  secondary: color.gray3,
-  success: color.success,
-  warning: color.warning,
-  danger: color.danger,
-  background: color.gray1,
-  surface: color.white,
-  textPrimary: color.black,
-  textSecondary: color.gray3,
-  border: color.blackAlpha.a3,
-  borderInput: color.blackAlpha.a3,
-  navFill: color.white,
-  headerGradient: [color.white, color.white] as [string, string],
+  secondary: color.cream.inkMuted,
+  success: color.semanticOnLight.success,
+  warning: color.semanticOnLight.warning,
+  danger: color.semanticOnLight.danger,
+  background: color.cream.bg,
+  surface: color.cream.surface,
+  textPrimary: color.cream.ink,
+  textSecondary: color.cream.inkSecondary,
+  border: color.cream.border,
+  borderInput: color.cream.border,
+  navFill: color.cream.surface,
+  headerGradient: [color.cream.surface, color.cream.surface] as [
+    string,
+    string
+  ],
 
   // New keys
   accent: color.accent,
   accentDim: color.accentDim,
   accentBright: color.accentBright,
 
-  bg: color.gray1,
-  bgElevated: color.white,
-  surface2: color.blackAlpha.a1,
-  surface3: color.blackAlpha.a2,
+  bg: color.cream.bg,
+  bgElevated: color.cream.surface,
+  surface2: color.cream.surface2,
+  surface3: color.cream.surface3,
 
-  text: color.black,
-  textMuted: color.gray3,
-  textDim: color.gray2,
+  text: color.cream.ink,
+  // textSecondary lives in the legacy block above (same value on desktop)
+  textMuted: color.cream.inkMuted,
+  textDim: color.cream.inkDim,
 
-  borderHover: color.blackAlpha.a4,
-  borderSubtle: color.blackAlpha.a2,
-  borderFaint: color.blackAlpha.a1,
+  borderHover: color.cream.borderHover,
+  borderSubtle: color.cream.borderSubtle,
+  borderFaint: color.cream.borderFaint,
 
-  info: color.info,
+  info: color.semanticOnLight.info,
   infoDim: color.infoDim,
   successDim: color.successDim,
   warningDim: color.warningDim,
   dangerDim: color.dangerDim,
 
-  glassBg: "rgba(255,255,255,0.80)",
-  glassBorder: color.blackAlpha.a2,
+  glassBg: color.cream.glassBg,
+  glassBorder: color.cream.glassBorder,
   modalBackdrop: color.blackAlpha.a6,
 
   mode: "light" as const,
 };
 
-export type ThemeColors = typeof DARK;
+// Widen the literal hex types so both palettes are assignable — DARK is the
+// shape, not the values.
+export type ThemeColors = {
+  [K in keyof typeof DARK]: (typeof DARK)[K] extends string
+    ? K extends "mode"
+      ? "dark" | "light"
+      : string
+    : (typeof DARK)[K];
+};
 
 const ThemeContext = createContext<{ theme: ThemeColors; toggle: () => void }>({
   theme: DARK,
