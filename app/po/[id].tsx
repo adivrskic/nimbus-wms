@@ -902,11 +902,101 @@ function ReceiveRunSheet({
       }
 
       onItemReceived();
+
+      // Optional putaway. Receiving alone deliberately does NOT create
+      // on-hand (desk parity — putaway is the explicit motion that does);
+      // offering it here saves the walk back to the scanner screen.
+      const qtyReceived =
+        item.quantity_expected - (item.quantity_received ?? 0);
+      if (item.product_id && qtyReceived > 0) {
+        void offerPutaway(item, qtyReceived);
+      }
     } catch (e: any) {
       Alert.alert("Couldn't receive", e?.message ?? "Try again.");
     } finally {
       setReceivingId(null);
     }
+  }
+
+  /**
+   * Offer to add the received units to the product's primary active slot in
+   * this facility. CAS-guarded increment + putaway audit row. Products with
+   * no active slot fall back to the scanner register/relocate motions (we
+   * don't invent slots here).
+   */
+  async function offerPutaway(item: PoLineItem, qty: number) {
+    const { data: slots } = await supabase
+      .from("locations")
+      .select("id, bay, level, quantity, quarantined, is_active, sections(code)")
+      .eq("product_id", item.product_id!)
+      .eq("warehouse_id", po.warehouse_id)
+      .limit(20);
+    const eligible = (slots ?? []).filter(
+      (s: any) => s.is_active !== false && s.quarantined !== true
+    );
+    if (eligible.length === 0) return;
+    const target: any = [...eligible].sort(
+      (a: any, b: any) => (b.quantity ?? 0) - (a.quantity ?? 0)
+    )[0];
+    const label = `${(target.sections as any)?.code ?? "?"}-Bay${target.bay}-L${target.level}`;
+
+    Alert.alert(
+      "Put away now?",
+      `Add ${qty} × ${displayName(item)} to ${label} (currently ${
+        target.quantity ?? 0
+      } on hand)?`,
+      [
+        { text: "Later", style: "cancel" },
+        {
+          text: "Put away",
+          onPress: async () => {
+            // CAS increment with one fresh-read retry.
+            for (let attempt = 0; attempt < 2; attempt++) {
+              const { data: freshRow } = await supabase
+                .from("locations")
+                .select("quantity")
+                .eq("id", target.id)
+                .maybeSingle();
+              const prev = (freshRow as any)?.quantity ?? 0;
+              const { data: updRows, error } = await supabase
+                .from("locations")
+                .update({ quantity: prev + qty })
+                .eq("id", target.id)
+                .eq("quantity", prev)
+                .select("id");
+              if (error) {
+                Alert.alert("Putaway failed", error.message);
+                return;
+              }
+              if (updRows && updRows.length > 0) {
+                const { data: u } = await supabase.auth.getUser();
+                const { error: audErr } = await supabase
+                  .from("scan_history")
+                  .insert({
+                    org_id: po.org_id,
+                    product_id: item.product_id,
+                    warehouse_id: po.warehouse_id,
+                    scanned_by: u?.user?.id ?? null,
+                    action: "putaway",
+                    quantity: qty,
+                    to_location: label,
+                    notes: `PO ${po.po_number}`,
+                  });
+                if (audErr && __DEV__)
+                  console.warn("[putaway] audit failed", audErr);
+                haptic.success();
+                showToast(`Put away ${qty} → ${label}`, "success");
+                return;
+              }
+            }
+            Alert.alert(
+              "Putaway failed",
+              "The slot changed on another device — adjust from the product page instead."
+            );
+          },
+        },
+      ]
+    );
   }
 
   return (
