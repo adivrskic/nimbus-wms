@@ -7,6 +7,7 @@ import "react-native-reanimated";
 import { AuthProvider, useAuth } from "../lib/auth";
 import { OfflineProvider } from "../lib/offline";
 import { ConflictModal } from "../lib/offlineUI";
+import { PushNotificationsBridge } from "../lib/push";
 import { ThemeProvider } from "../lib/theme";
 import { ToastProvider } from "../lib/ui";
 import { WarehouseProvider } from "../lib/warehouse";
@@ -41,6 +42,7 @@ function RootLayoutNav() {
           header bar. */}
       <Stack screenOptions={{ headerShown: false }} />
       <ConflictModal />
+      <PushNotificationsBridge />
     </>
   );
 }

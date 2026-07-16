@@ -46,6 +46,10 @@ import { ScreenHeader } from "../../lib/nimbus/Header";
 import { Icon, IconName } from "../../lib/nimbus/Icon";
 import { layout, space, type } from "../../lib/nimbus/tokens";
 import { usePermissions } from "../../lib/permissions";
+import {
+  registerForPushNotifications,
+  unregisterPushNotifications,
+} from "../../lib/push";
 import { signOutDevice, supabase } from "../../lib/supabase";
 import { useTheme, useThemeToggle } from "../../lib/theme";
 import { haptic } from "../../lib/ui";
@@ -268,13 +272,31 @@ export default function SettingsScreen() {
             trailing={
               <Switch
                 value={notificationsEnabled}
-                onValueChange={(v) => {
+                onValueChange={async (v) => {
                   haptic.selection();
                   setNotificationsEnabled(v);
                   AsyncStorage.setItem(
                     PREF_NOTIFICATIONS,
                     v ? "true" : "false"
                   ).catch(() => {});
+                  // The pref alone used to be a dead toggle — actually
+                  // register/remove this device's Expo push token.
+                  if (v) {
+                    const { data: u } = await supabase.auth.getUser();
+                    if (!u?.user?.id) return;
+                    const result = await registerForPushNotifications(
+                      u.user.id
+                    );
+                    if (!result.ok) {
+                      setNotificationsEnabled(false);
+                      AsyncStorage.setItem(PREF_NOTIFICATIONS, "false").catch(
+                        () => {}
+                      );
+                      Alert.alert("Push not enabled", result.message);
+                    }
+                  } else {
+                    await unregisterPushNotifications();
+                  }
                 }}
                 trackColor={{ true: T.accent, false: T.borderSubtle }}
                 thumbColor={T.text}

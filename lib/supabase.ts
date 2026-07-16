@@ -37,6 +37,16 @@ AppState.addEventListener("change", (state) => {
  * under user B's session and B could read A's cached inventory.
  */
 export async function signOutDevice() {
+  // Remove this device's push token FIRST (needs the session's RLS access) —
+  // otherwise the next operator's phone keeps receiving the previous
+  // account's alerts.
+  try {
+    const token = await AsyncStorage.getItem("nautilus_push_token");
+    if (token) {
+      await supabase.from("user_push_tokens").delete().eq("token", token);
+      await AsyncStorage.removeItem("nautilus_push_token");
+    }
+  } catch {}
   try {
     const keys = await AsyncStorage.getAllKeys();
     const stale = keys.filter(
