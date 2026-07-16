@@ -9,6 +9,7 @@ import React, {
   useState,
 } from "react";
 import { Alert, AppState } from "react-native";
+import { applyOrQueueAdjustment } from "./adjustments";
 import { supabase } from "./supabase";
 
 // ============================================================
@@ -19,6 +20,9 @@ export type OfflineOp = {
   type: "register" | "adjust" | "relocate";
   createdAt: string;
   warehouseId: string;
+  /** Org of the warehouse. Optional for ops queued by older builds — replay
+   * resolves it from the warehouse row when absent. */
+  orgId?: string;
   payload: any;
 };
 
@@ -66,6 +70,11 @@ export function OfflineProvider({ children }: { children: React.ReactNode }) {
   const [queue, setQueue] = useState<OfflineOp[]>([]);
   const [conflicts, setConflicts] = useState<Conflict[]>([]);
   const [syncing, setSyncing] = useState(false);
+  // The in-flight guard must be a ref: two rapid queueOperation() calls both
+  // schedule syncPending() with `syncing === false` captured in their closure,
+  // so a state-based guard let both runs process the same snapshot (double-
+  // applied adjustments surfacing as spurious conflicts).
+  const syncingRef = useRef(false);
   const wasOffline = useRef(false);
   // Mirror of `queue` for callbacks/effects that would otherwise close over a
   // stale value (immediate post-enqueue sync, foreground/online edges).
@@ -95,37 +104,42 @@ export function OfflineProvider({ children }: { children: React.ReactNode }) {
   // hoisted processOp / persistQueue declarations further down.
   const syncPending = useCallback(async () => {
     const snapshot = queueRef.current;
-    if (syncing || snapshot.length === 0) return;
+    if (syncingRef.current || snapshot.length === 0) return;
+    syncingRef.current = true;
     setSyncing(true);
 
-    const remaining: OfflineOp[] = [];
-    const newConflicts: Conflict[] = [];
+    try {
+      const remaining: OfflineOp[] = [];
+      const newConflicts: Conflict[] = [];
 
-    for (const op of snapshot) {
-      try {
-        const result = await processOp(op);
-        if (result.conflict) {
-          newConflicts.push({
-            op,
-            serverData: result.serverData,
-            reason: result.reason || "Modified while offline",
-          });
+      for (const op of snapshot) {
+        try {
+          const result = await processOp(op);
+          if (result.conflict) {
+            newConflicts.push({
+              op,
+              serverData: result.serverData,
+              reason: result.reason || "Modified while offline",
+            });
+          }
+          // If success or conflict, don't re-queue (conflicts go to conflict list)
+        } catch (e: any) {
+          // Network or unexpected error — keep in queue to retry
+          remaining.push(op);
         }
-        // If success or conflict, don't re-queue (conflicts go to conflict list)
-      } catch (e: any) {
-        // Network or unexpected error — keep in queue to retry
-        remaining.push(op);
       }
-    }
 
-    // Preserve anything enqueued while this sync was running.
-    const added = queueRef.current.filter((op) => !snapshot.includes(op));
-    await persistQueue([...remaining, ...added]);
-    if (newConflicts.length > 0) {
-      setConflicts((prev) => [...prev, ...newConflicts]);
+      // Preserve anything enqueued while this sync was running.
+      const added = queueRef.current.filter((op) => !snapshot.includes(op));
+      await persistQueue([...remaining, ...added]);
+      if (newConflicts.length > 0) {
+        setConflicts((prev) => [...prev, ...newConflicts]);
+      }
+    } finally {
+      syncingRef.current = false;
+      setSyncing(false);
     }
-    setSyncing(false);
-  }, [syncing]);
+  }, []);
 
   // Auto-sync when coming back online
   useEffect(() => {
@@ -179,6 +193,19 @@ export function OfflineProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
+  // scan_history.org_id is NOT NULL — audit rows written without it were
+  // silently rejected (23502). Ops queued before orgId was captured resolve
+  // it from the warehouse row.
+  async function resolveOrgId(op: OfflineOp): Promise<string | null> {
+    if (op.orgId) return op.orgId;
+    const { data } = await supabase
+      .from("warehouses")
+      .select("org_id")
+      .eq("id", op.warehouseId)
+      .maybeSingle();
+    return (data as { org_id: string } | null)?.org_id ?? null;
+  }
+
   async function processOp(
     op: OfflineOp
   ): Promise<{ conflict?: boolean; serverData?: any; reason?: string }> {
@@ -221,9 +248,11 @@ export function OfflineProvider({ children }: { children: React.ReactNode }) {
         const {
           data: { user },
         } = await supabase.auth.getUser();
+        const orgId = await resolveOrgId(op);
         await supabase
           .from("scan_history")
           .insert({
+            org_id: orgId,
             product_id: newProduct.id,
             warehouse_id: op.warehouseId,
             scanned_by: user?.id,
@@ -263,26 +292,35 @@ export function OfflineProvider({ children }: { children: React.ReactNode }) {
           };
         }
 
-        const newQty = Math.max(0, loc.quantity + delta);
-        const { error } = await supabase
-          .from("locations")
-          .update({ quantity: newQty })
-          .eq("id", locationId);
-        if (error) throw error;
-
+        // Replay through the SAME governance path the online flow uses:
+        // commit_stock_adjustment is compare-and-set + writes the audited
+        // scan_history row itself, and over-threshold deltas queue for
+        // approval instead of applying silently. A raw locations.update here
+        // let offline ops bypass all of that.
+        const orgId = await resolveOrgId(op);
+        if (!orgId) throw new Error("Could not resolve org for adjustment");
         const {
           data: { user },
         } = await supabase.auth.getUser();
-        await supabase.from("scan_history").insert({
-          product_id: productId,
-          warehouse_id: op.warehouseId,
-          scanned_by: user?.id,
-          action: "adjust",
-          quantity: delta,
-          notes: `Offline: ${delta > 0 ? "+" : ""}${delta} (${
-            loc.quantity
-          } → ${newQty})`,
+        const result = await applyOrQueueAdjustment({
+          orgId,
+          userId: user?.id ?? "",
+          locationId,
+          warehouseId: op.warehouseId,
+          productId: productId ?? null,
+          currentQty: loc.quantity,
+          requestedQty: Math.max(0, loc.quantity + delta),
+          reason: null,
+          notes: `Offline: ${delta > 0 ? "+" : ""}${delta}`,
         });
+        if (result.outcome === "error") {
+          // CAS lost or RLS refused — surface as a conflict, not a retry loop.
+          return {
+            conflict: true,
+            serverData: { currentQuantity: loc.quantity, locationId },
+            reason: result.message,
+          };
+        }
         return {};
       }
 
@@ -324,15 +362,23 @@ export function OfflineProvider({ children }: { children: React.ReactNode }) {
         const {
           data: { user },
         } = await supabase.auth.getUser();
-        await supabase.from("scan_history").insert({
-          product_id: productId,
-          warehouse_id: op.warehouseId,
-          scanned_by: user?.id,
-          action: "relocate",
-          from_location: fromLocationLabel,
-          to_location: toLocationLabel,
-          notes: "Offline operation",
-        });
+        const orgId = await resolveOrgId(op);
+        await supabase
+          .from("scan_history")
+          .insert({
+            org_id: orgId,
+            product_id: productId,
+            warehouse_id: op.warehouseId,
+            scanned_by: user?.id,
+            action: "relocate",
+            from_location: fromLocationLabel,
+            to_location: toLocationLabel,
+            notes: "Offline operation",
+          })
+          .then(({ error: audErr }) => {
+            if (audErr && __DEV__)
+              console.warn("[offline] relocate scan_history failed", audErr);
+          });
         return {};
       }
 
@@ -365,28 +411,31 @@ export function OfflineProvider({ children }: { children: React.ReactNode }) {
       }
       case "adjust": {
         const { locationId, delta, productId } = op.payload;
+        // "Keep mine" re-applies the delta on top of the FRESH server value,
+        // still through governance (CAS + audit + approval threshold).
         const { data: loc } = await supabase
           .from("locations")
           .select("quantity")
           .eq("id", locationId)
           .single();
         if (!loc) return;
-        const newQty = Math.max(0, loc.quantity + delta);
-        await supabase
-          .from("locations")
-          .update({ quantity: newQty })
-          .eq("id", locationId);
+        const orgId = await resolveOrgId(op);
+        if (!orgId) throw new Error("Could not resolve org for adjustment");
         const {
           data: { user },
         } = await supabase.auth.getUser();
-        await supabase.from("scan_history").insert({
-          product_id: productId,
-          warehouse_id: op.warehouseId,
-          scanned_by: user?.id,
-          action: "adjust",
-          quantity: delta,
+        const result = await applyOrQueueAdjustment({
+          orgId,
+          userId: user?.id ?? "",
+          locationId,
+          warehouseId: op.warehouseId,
+          productId: productId ?? null,
+          currentQty: loc.quantity,
+          requestedQty: Math.max(0, loc.quantity + delta),
+          reason: null,
           notes: `Conflict resolved: ${delta > 0 ? "+" : ""}${delta}`,
         });
+        if (result.outcome === "error") throw new Error(result.message);
         break;
       }
       case "relocate": {
@@ -399,22 +448,31 @@ export function OfflineProvider({ children }: { children: React.ReactNode }) {
           toLocationLabel,
           fromLocationLabel,
         } = op.payload;
-        await supabase
+        const { error: relErr } = await supabase
           .from("locations")
           .update({ section_id: newSectionId, bay: newBay, level: newLevel })
           .eq("id", locationId);
+        if (relErr) throw relErr;
         const {
           data: { user },
         } = await supabase.auth.getUser();
-        await supabase.from("scan_history").insert({
-          product_id: productId,
-          warehouse_id: op.warehouseId,
-          scanned_by: user?.id,
-          action: "relocate",
-          from_location: fromLocationLabel,
-          to_location: toLocationLabel,
-          notes: "Conflict resolved: kept local",
-        });
+        const orgId = await resolveOrgId(op);
+        await supabase
+          .from("scan_history")
+          .insert({
+            org_id: orgId,
+            product_id: productId,
+            warehouse_id: op.warehouseId,
+            scanned_by: user?.id,
+            action: "relocate",
+            from_location: fromLocationLabel,
+            to_location: toLocationLabel,
+            notes: "Conflict resolved: kept local",
+          })
+          .then(({ error: audErr }) => {
+            if (audErr && __DEV__)
+              console.warn("[offline] relocate scan_history failed", audErr);
+          });
         break;
       }
     }

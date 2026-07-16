@@ -18,7 +18,7 @@
  */
 
 import { useFocusEffect, useRouter } from "expo-router";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -36,7 +36,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { fefoSuggestions, type FefoSuggestion } from "../lib/fefo";
 import { ScreenHeader } from "../lib/nimbus/Header";
 import { Icon } from "../lib/nimbus/Icon";
-import { layout, space, type } from "../lib/nimbus/tokens";
+import { color, layout, space, type } from "../lib/nimbus/tokens";
 import { supabase } from "../lib/supabase";
 import { useTheme } from "../lib/theme";
 import { haptic, showToast } from "../lib/ui";
@@ -104,9 +104,14 @@ export default function WavesScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [runWave, setRunWave] = useState<Wave | null>(null);
 
+  // Ref, not a dep — a `refreshing` dependency re-fired the focus effect on
+  // every pull-to-refresh.
+  const refreshingRef = useRef(false);
+  refreshingRef.current = refreshing;
+
   const load = useCallback(async () => {
     if (!wh.warehouseId) return;
-    if (!refreshing) setLoading(true);
+    if (!refreshingRef.current) setLoading(true);
     const { data } = await supabase
       .from("pick_waves")
       .select("id, code, status, assigned_to, notes, created_at, orders(count)")
@@ -117,7 +122,7 @@ export default function WavesScreen() {
     if (data) setWaves(data as unknown as Wave[]);
     setLoading(false);
     setRefreshing(false);
-  }, [wh.warehouseId, refreshing]);
+  }, [wh.warehouseId]);
 
   useFocusEffect(
     useCallback(() => {
@@ -128,10 +133,29 @@ export default function WavesScreen() {
   async function toggleClaim(wave: Wave) {
     haptic.medium();
     const mine = wave.assigned_to === wh.userId;
-    await supabase
-      .from("pick_waves")
-      .update({ assigned_to: mine ? null : wh.userId })
-      .eq("id", wave.id);
+    if (mine) {
+      // Release only if it's still ours.
+      const { error } = await supabase
+        .from("pick_waves")
+        .update({ assigned_to: null })
+        .eq("id", wave.id)
+        .eq("assigned_to", wh.userId);
+      if (error) Alert.alert("Couldn't release wave", error.message);
+    } else {
+      // Guarded claim: only wins if nobody holds it — two pickers used to be
+      // able to silently steal each other's wave.
+      const { data, error } = await supabase
+        .from("pick_waves")
+        .update({ assigned_to: wh.userId })
+        .eq("id", wave.id)
+        .is("assigned_to", null)
+        .select("id");
+      if (error) {
+        Alert.alert("Couldn't claim wave", error.message);
+      } else if (!data || data.length === 0) {
+        showToast("Wave was just claimed by someone else", "error");
+      }
+    }
     load();
   }
 
@@ -402,10 +426,15 @@ function WaveRunSheet({
       if (
         ["created", "pick_list_assigned", "in_progress"].includes(o.status)
       ) {
-        await supabase
+        const { error: stageErr } = await supabase
           .from("orders")
           .update({ status: "staged" })
           .eq("id", o.id);
+        if (stageErr) {
+          setCompleting(false);
+          Alert.alert("Couldn't stage order", stageErr.message);
+          return;
+        }
       }
     }
 
@@ -537,11 +566,11 @@ function WaveRunSheet({
               style={[styles.ctaPrimary, { backgroundColor: T.success }]}
               accessibilityLabel="Complete wave"
             >
-              <Icon name="check" size={16} color="#000" strokeWidth={2} />
+              <Icon name="check" size={16} color={color.black} strokeWidth={2} />
               <Text
                 style={[
                   type.label,
-                  { color: "#000", letterSpacing: 2, marginLeft: space.s8 },
+                  { color: color.black, letterSpacing: 2, marginLeft: space.s8 },
                 ]}
               >
                 {completing ? "COMPLETING…" : "COMPLETE WAVE"}

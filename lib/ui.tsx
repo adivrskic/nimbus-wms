@@ -9,7 +9,6 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { THEME } from "./config";
 import { color, font } from "./nimbus/tokens";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
@@ -68,7 +67,7 @@ export function GradientCard({
     <View
       style={[
         {
-          backgroundColor: colors?.[0] || THEME.surface,
+          backgroundColor: colors?.[0] || color.nearBlack,
           borderWidth: 1,
           borderColor: color.whiteAlpha.a2,
           padding: 20,
@@ -121,7 +120,7 @@ export function ElevatedCard({
     <Animated.View
       style={[
         {
-          backgroundColor: THEME.surface,
+          backgroundColor: color.nearBlack,
           borderWidth: 1,
           borderColor: color.whiteAlpha.a2,
           padding: 16,
@@ -243,7 +242,7 @@ export function SkeletonCard() {
     <View
       style={[
         {
-          backgroundColor: THEME.surface,
+          backgroundColor: color.nearBlack,
           borderWidth: 1,
           borderColor: color.whiteAlpha.a2,
           padding: 16,
@@ -273,7 +272,7 @@ export function SkeletonStats() {
           style={[
             {
               flex: 1,
-              backgroundColor: THEME.surface,
+              backgroundColor: color.nearBlack,
               borderWidth: 1,
               borderColor: color.whiteAlpha.a2,
               padding: 16,
@@ -410,10 +409,9 @@ const toastStyles = StyleSheet.create({
 // BUTTON WITH HAPTIC + GRADIENT
 // ============================================================
 const btnTextStyle = {
-  color: "#000",
-  fontFamily: font.mono,
+  color: color.black,
+  fontFamily: font.monoMedium, // 500 — weight baked into the face
   fontSize: 12,
-  fontWeight: "500" as const,
   letterSpacing: 0.5,
   textTransform: "uppercase" as const,
 };
@@ -479,7 +477,7 @@ export function GradientButton({
                 <FontAwesome
                   name={icon as any}
                   size={14}
-                  color="#000"
+                  color={color.black}
                   style={{ marginRight: 8 }}
                 />
               )}

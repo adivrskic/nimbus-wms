@@ -18,7 +18,7 @@
  */
 
 import { useFocusEffect, useRouter } from "expo-router";
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -196,15 +196,23 @@ export default function OrdersScreen() {
   const [mineOnly, setMineOnly] = useState(false);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
+  // `refreshing` deliberately isn't a dependency — having it there recreated
+  // this callback on every pull-to-refresh, which re-ran the focus effect and
+  // fired 2-3 redundant fetches per refresh.
+  const refreshingRef = useRef(false);
+  refreshingRef.current = refreshing;
+
   const loadOrders = useCallback(async () => {
     if (!wh.warehouseId) return;
-    if (!refreshing) setLoading(true);
+    if (!refreshingRef.current) setLoading(true);
 
     if (!currentUserId) {
       const { data: u } = await supabase.auth.getUser();
       if (u?.user?.id) setCurrentUserId(u.user.id);
     }
 
+    // Bounded: PostgREST silently caps at 1000 rows, which would truncate the
+    // filter counts anyway — cap explicitly at the most relevant 500.
     const { data } = await supabase
       .from("orders")
       .select(
@@ -212,12 +220,13 @@ export default function OrdersScreen() {
       )
       .eq("warehouse_id", wh.warehouseId)
       .order("delivery_date", { ascending: true, nullsFirst: false })
-      .order("created_at", { ascending: false });
+      .order("created_at", { ascending: false })
+      .limit(500);
 
     if (data) setOrders(data as unknown as OrderRow[]);
     setLoading(false);
     setRefreshing(false);
-  }, [wh.warehouseId, refreshing, currentUserId]);
+  }, [wh.warehouseId, currentUserId]);
 
   useFocusEffect(
     useCallback(() => {
@@ -371,7 +380,7 @@ export default function OrdersScreen() {
               theme={T}
               onPress={() => {
                 haptic.light();
-                router.push(`/order/${item.id}` as any);
+                router.push(`/orders/${item.id}` as any);
               }}
             />
           )}

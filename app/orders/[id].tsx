@@ -52,7 +52,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { fefoSuggestions, type FefoSuggestion } from "../../lib/fefo";
 import { ScreenHeader } from "../../lib/nimbus/Header";
 import { Icon } from "../../lib/nimbus/Icon";
-import { layout, space, type } from "../../lib/nimbus/tokens";
+import { color, layout, space, type } from "../../lib/nimbus/tokens";
 import { useOffline } from "../../lib/offline";
 import { usePermissions } from "../../lib/permissions";
 import { supabase } from "../../lib/supabase";
@@ -485,11 +485,11 @@ export default function OrderDetailScreen() {
             ]}
             accessibilityLabel="Start pick run"
           >
-            <Icon name="barcode" size={16} color="#000" strokeWidth={1.75} />
+            <Icon name="barcode" size={16} color={color.black} strokeWidth={1.75} />
             <Text
               style={[
                 type.label,
-                { color: "#000", letterSpacing: 2, marginLeft: space.s8 },
+                { color: color.black, letterSpacing: 2, marginLeft: space.s8 },
               ]}
             >
               {order.status === "in_progress"
@@ -508,18 +508,19 @@ export default function OrderDetailScreen() {
         warehouseId={warehouseId}
         onItemPicked={() => loadOrder()}
         onComplete={async () => {
-          // Status → staged
-          try {
-            await supabase
-              .from("orders")
-              .update({ status: "staged" })
-              .eq("id", order.id);
-            haptic.heavy();
-            setPickRunOpen(false);
-            await loadOrder();
-          } catch (e: any) {
-            Alert.alert("Couldn't complete", e?.message ?? "Try again.");
+          // Status → staged. supabase-js returns errors in the result — it
+          // never throws, so the old try/catch silently "succeeded".
+          const { error } = await supabase
+            .from("orders")
+            .update({ status: "staged" })
+            .eq("id", order.id);
+          if (error) {
+            Alert.alert("Couldn't complete", error.message);
+            return;
           }
+          haptic.heavy();
+          setPickRunOpen(false);
+          await loadOrder();
         }}
         onClose={() => setPickRunOpen(false)}
         theme={T}
@@ -740,6 +741,14 @@ function PickRunSheet({
 
   function pickItem(item: OrderItem) {
     if (isFullyPicked(item) || pickingId) return;
+    // Picks are an atomic RPC — they are NOT queued by the offline layer.
+    if (!isOnline) {
+      Alert.alert(
+        "You're offline",
+        "Picking needs a connection — the pick RPC can't be queued. Reconnect and try again."
+      );
+      return;
+    }
     haptic.light();
     // No barcode on record → nothing to verify against; pick directly.
     if (!item.products?.barcode && !item.products?.internal_sku) {
@@ -842,7 +851,7 @@ function PickRunSheet({
             <Text
               style={[type.labelSm, { color: T.warning, letterSpacing: 1.5 }]}
             >
-              OFFLINE · PICKS WILL SYNC ON RECONNECT
+              OFFLINE · PICKING PAUSED UNTIL RECONNECT
             </Text>
           </View>
         ) : null}
@@ -939,11 +948,11 @@ function PickRunSheet({
               ]}
               accessibilityLabel="Complete run"
             >
-              <Icon name="check" size={16} color="#000" strokeWidth={2} />
+              <Icon name="check" size={16} color={color.black} strokeWidth={2} />
               <Text
                 style={[
                   type.label,
-                  { color: "#000", letterSpacing: 2, marginLeft: space.s8 },
+                  { color: color.black, letterSpacing: 2, marginLeft: space.s8 },
                 ]}
               >
                 COMPLETE RUN

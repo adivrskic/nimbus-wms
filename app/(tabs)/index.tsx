@@ -21,7 +21,7 @@
  */
 
 import { useFocusEffect, useRouter } from "expo-router";
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -131,10 +131,14 @@ export default function HomeScreen() {
   const [recent, setRecent] = useState<RecentScan[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  // Ref, not a dep — a `refreshing` dependency recreated `load` per
+  // pull-to-refresh and re-fired the focus effect (2-3 fetches per refresh).
+  const refreshingRef = useRef(false);
+  refreshingRef.current = refreshing;
 
   const load = useCallback(async () => {
     if (!warehouseId) return;
-    if (!refreshing) setLoading(true);
+    if (!refreshingRef.current) setLoading(true);
 
     const [statsRes, scansRes] = await Promise.all([
       // Legacy helper — lives in the `public` schema, not `app`, so the
@@ -159,7 +163,7 @@ export default function HomeScreen() {
 
     setLoading(false);
     setRefreshing(false);
-  }, [warehouseId, refreshing]);
+  }, [warehouseId]);
 
   useFocusEffect(
     useCallback(() => {

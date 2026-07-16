@@ -28,7 +28,7 @@
  */
 
 import { useFocusEffect, useRouter } from "expo-router";
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -47,6 +47,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ScreenHeader } from "../lib/nimbus/Header";
 import { Icon } from "../lib/nimbus/Icon";
 import { color, layout, space, type } from "../lib/nimbus/tokens";
+import { usePermissions } from "../lib/permissions";
 import { supabase } from "../lib/supabase";
 import { useTheme } from "../lib/theme";
 import { haptic } from "../lib/ui";
@@ -137,6 +138,7 @@ export default function ReturnsScreen() {
   const T = useTheme();
   const router = useRouter();
   const wh = useWarehouse();
+  const perms = usePermissions();
 
   const [returns, setReturns] = useState<ReturnRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -144,9 +146,14 @@ export default function ReturnsScreen() {
   const [logOpen, setLogOpen] = useState(false);
   const [restockTarget, setRestockTarget] = useState<ReturnRow | null>(null);
 
+  // Ref, not a dep — a `refreshing` dependency re-fired the focus effect on
+  // every pull-to-refresh.
+  const refreshingRef = useRef(false);
+  refreshingRef.current = refreshing;
+
   const load = useCallback(async () => {
     if (!wh.warehouseId) return;
-    if (!refreshing) setLoading(true);
+    if (!refreshingRef.current) setLoading(true);
     const { data } = await supabase
       .from("returns")
       .select(
@@ -159,7 +166,7 @@ export default function ReturnsScreen() {
     if (data) setReturns(data as unknown as ReturnRow[]);
     setLoading(false);
     setRefreshing(false);
-  }, [wh.warehouseId, refreshing]);
+  }, [wh.warehouseId]);
 
   useFocusEffect(
     useCallback(() => {
@@ -184,18 +191,20 @@ export default function ReturnsScreen() {
           </Pressable>
         }
         trailing={
-          <Pressable
-            onPress={() => {
-              haptic.light();
-              setLogOpen(true);
-            }}
-            hitSlop={10}
-            accessibilityLabel="Log a new return"
-          >
-            <Text style={[type.label, { color: T.accent, letterSpacing: 2 }]}>
-              + NEW
-            </Text>
-          </Pressable>
+          perms.canProcessReturns ? (
+            <Pressable
+              onPress={() => {
+                haptic.light();
+                setLogOpen(true);
+              }}
+              hitSlop={10}
+              accessibilityLabel="Log a new return"
+            >
+              <Text style={[type.label, { color: T.accent, letterSpacing: 2 }]}>
+                + NEW
+              </Text>
+            </Pressable>
+          ) : undefined
         }
       />
 
@@ -264,7 +273,9 @@ export default function ReturnsScreen() {
               item={item}
               theme={T}
               onRestock={
-                isRestockable(item) ? () => setRestockTarget(item) : undefined
+                perms.canProcessReturns && isRestockable(item)
+                  ? () => setRestockTarget(item)
+                  : undefined
               }
             />
           )}
@@ -695,14 +706,20 @@ function LogReturnSheet({
   }, [open]);
 
   async function lookup() {
-    const term = code.trim();
-    if (!term) return;
+    // Sanitize before interpolating into the PostgREST .or() filter — a
+    // scanned value containing , ( ) . injects extra filter clauses.
+    const term = code.trim().replace(/[^A-Za-z0-9_-]/g, "");
+    if (!term) {
+      Alert.alert("Invalid code", "Scan or type a product barcode or SKU.");
+      return;
+    }
     setSearching(true);
     haptic.light();
     try {
       const { data } = await supabase
         .from("products")
         .select("id, name, barcode, internal_sku")
+        .eq("org_id", orgId)
         .or(`barcode.eq.${term},internal_sku.eq.${term}`)
         .limit(1)
         .maybeSingle();

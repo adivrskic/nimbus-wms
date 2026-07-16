@@ -22,6 +22,12 @@ type WarehouseContextType = {
   userId: string;
   /** Org role from app.org_members: "owner" | "admin" | "member". */
   userRole: string;
+  /**
+   * Explicit per-member permission overrides from app.org_members.permissions
+   * (null = use the role's defaults). Resolved by lib/permissions.ts using the
+   * same rules as the desktop app's effectivePermissions().
+   */
+  userPermissions: string[] | null;
   /** Org of the ACTIVE warehouse — the user can belong to several orgs. */
   orgId: string;
   warehouseName: string;
@@ -45,6 +51,7 @@ const defaults: WarehouseContextType = {
   userName: "",
   userId: "",
   userRole: "member",
+  userPermissions: null,
   orgId: "",
   warehouseName: "",
   warehouseAddress: "",
@@ -124,17 +131,20 @@ export function WarehouseProvider({ children }: { children: React.ReactNode }) {
       } catch {}
     }
 
-    // Role comes from app.org_members for the ACTIVE warehouse's org —
-    // profiles has no role column, and the user may belong to several orgs.
+    // Role + explicit permission overrides come from app.org_members for the
+    // ACTIVE warehouse's org — profiles has no role column, and the user may
+    // belong to several orgs.
     let userRole = "member";
+    let userPermissions: string[] | null = null;
     if (wh?.org_id) {
       const { data: membership } = await supabase
         .from("org_members")
-        .select("role")
+        .select("role, permissions")
         .eq("org_id", wh.org_id)
         .eq("user_id", user.id)
         .maybeSingle();
       userRole = membership?.role || "member";
+      userPermissions = (membership?.permissions as string[] | null) ?? null;
     }
 
     setData((prev) => ({
@@ -143,6 +153,7 @@ export function WarehouseProvider({ children }: { children: React.ReactNode }) {
       userName,
       userId: user.id,
       userRole,
+      userPermissions,
       orgId: wh?.org_id || "",
       warehouseName: wh?.name || "",
       warehouseAddress: wh?.address || "",
@@ -200,15 +211,22 @@ export function WarehouseProvider({ children }: { children: React.ReactNode }) {
 
       if (whErr) return { success: false, error: whErr.message };
 
-      // Grant creator access so RLS allows them to see it
-      await supabase
+      // Grant creator access so RLS allows them to see it. Surface a failure
+      // instead of swallowing it — otherwise the new facility is invisible to
+      // its creator with no explanation.
+      const { error: accessErr } = await supabase
         .from("warehouse_access")
         .insert({
           user_id: user.id,
           warehouse_id: wh.id,
           granted_by: user.id,
-        })
-        .then(() => {});
+        });
+      if (accessErr) {
+        return {
+          success: false,
+          error: `Facility created, but access grant failed: ${accessErr.message}`,
+        };
+      }
 
       await load(wh.id);
       return { success: true };

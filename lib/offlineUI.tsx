@@ -1,7 +1,7 @@
 import FontAwesome from "@expo/vector-icons/FontAwesome";
 import React from "react";
 import { Modal, StyleSheet, Text, TouchableOpacity, View } from "react-native";
-import { THEME } from "./config";
+import { color, radius } from "./nimbus/tokens";
 import { useOffline } from "./offline";
 import { useTheme } from "./theme";
 import { haptic } from "./ui";
@@ -63,8 +63,12 @@ const ob = StyleSheet.create({
     borderLeftWidth: 4, // semantic left-edge escalation, per list-row pattern
   },
   text: { fontSize: 12, fontWeight: "600", flex: 1 },
-  badge: { borderRadius: 999, paddingHorizontal: 7, paddingVertical: 2 },
-  badgeText: { fontSize: 10, fontWeight: "bold", color: "#FFF" },
+  badge: {
+    borderRadius: radius.pill,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+  },
+  badgeText: { fontSize: 10, fontWeight: "bold", color: color.white },
 });
 
 // ============================================================
@@ -147,10 +151,12 @@ export function ConflictModal() {
               <FontAwesome
                 name="mobile"
                 size={15}
-                color="#000"
+                color={color.black}
                 style={{ marginRight: 6 }}
               />
-              <Text style={[cm.btnText, { color: "#000" }]}>Keep mine</Text>
+              <Text style={[cm.btnText, { color: color.black }]}>
+                Keep mine
+              </Text>
             </TouchableOpacity>
           </View>
 
@@ -169,7 +175,7 @@ export function ConflictModal() {
 const cm = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.60)", // modal backdrop parity with desktop
+    backgroundColor: color.blackAlpha.a6, // modal backdrop parity with desktop
     justifyContent: "center",
     alignItems: "center",
     paddingHorizontal: 32,
@@ -179,13 +185,13 @@ const cm = StyleSheet.create({
     padding: 24,
     alignItems: "center",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.06)",
+    borderColor: color.whiteAlpha.a2,
   },
   iconWrap: { marginBottom: 16 },
   iconCircle: {
     width: 56,
     height: 56,
-    borderRadius: 28, // pill exception: status/avatar circles stay round
+    borderRadius: radius.pill, // pill exception: status/avatar circles stay round
     justifyContent: "center",
     alignItems: "center",
   },
@@ -221,13 +227,11 @@ export function PendingBadge({ style }: { style?: any }) {
     <View
       style={[
         pb.wrap,
-        { backgroundColor: isOnline ? THEME.primary : THEME.danger },
+        { backgroundColor: isOnline ? color.accent : color.danger },
         style,
       ]}
     >
-      <Text
-        style={[pb.text, { color: isOnline ? "#000" : "#FFF" }]}
-      >
+      <Text style={[pb.text, { color: isOnline ? color.black : color.white }]}>
         {pendingCount > 9 ? "9+" : pendingCount}
       </Text>
     </View>
@@ -241,12 +245,12 @@ const pb = StyleSheet.create({
     right: -6,
     minWidth: 16,
     height: 16,
-    borderRadius: 8, // pill exception: status dots stay round
+    borderRadius: radius.none, // sharp by default — count badge, not a status dot
     justifyContent: "center",
     alignItems: "center",
     paddingHorizontal: 4,
     borderWidth: 2,
-    borderColor: "#0a0a0a", // sits on the near-black tab bar
+    borderColor: color.nearBlack, // sits on the near-black tab bar
   },
   text: { fontSize: 9, fontWeight: "bold" },
 });

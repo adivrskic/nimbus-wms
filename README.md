@@ -56,7 +56,7 @@ Nautilus is a multi-surface product. This repo is the mobile piece.
 | **Mobile app** _(this repo)_ | Expo / React Native     | On-the-floor barcode picking + adjustments |
 | **Edge functions**           | `nimbus-edge-functions` | AI narration and background jobs           |
 
-All surfaces share one **Supabase project** and one **design system** (`nimbus-design-system.md`). As of the latest rebuild the mobile app has been brought onto the shared Nautilus tokens (sharp corners, gold-on-dark, Satoshi + JetBrains Mono) — see [Design system](#design-system) and [the migration section](#the-design-system-migration) for what's converged and what's still on the legacy chrome.
+All surfaces share one **Supabase project** and one **design system** (`nimbus-design-system.md`). The mobile app is fully on the shared Nautilus tokens (sharp corners, gold-on-dark, Satoshi + JetBrains Mono loaded via `expo-font`) — see [Design system](#design-system) and [the migration section](#the-design-system-migration).
 
 ---
 
@@ -119,7 +119,7 @@ Reached via the FAB. A live camera with an animated crosshair scans barcodes (EA
 
 ### Product detail (`app/product/[id].tsx`)
 
-Inline quantity steppers per location, a relocate flow (section → bay → level), full edit (manager+), delete (manager+), photo change, and an activity timeline. Adjusts and relocations work offline with optimistic UI. _(Still on the legacy header/gradient chrome — see the migration section.)_
+Inline quantity steppers per location, a relocate flow (section → bay → level), full edit (manager+), delete (manager+), photo change, and an activity timeline. Adjusts and relocations work offline with optimistic UI.
 
 ### Map (`app/(tabs)/map.tsx`)
 
@@ -131,7 +131,7 @@ A read-only activity feed aggregated from existing data (no `notifications` tabl
 
 ### Analytics (`app/analytics.tsx`)
 
-A four-tab reporting screen (Overview / Inventory / Activity / Operations). Currently surfaced from More as "coming soon — desktop for now"; the screen exists but is still on the legacy chrome and not yet wired as a primary destination.
+A four-tab reporting screen (Overview / Inventory / Activity / Operations). Currently surfaced from More as "coming soon — desktop for now"; the screen exists but is not yet wired as a primary destination.
 
 ### Settings (`app/(tabs)/settings.tsx`)
 
@@ -198,7 +198,7 @@ npm run web        # browser — limited; camera/biometric won't work
 
 ### Fonts
 
-The design tokens reference **Satoshi** (display) and **JetBrains Mono**. If they aren't loaded via `expo-font`, RN falls back silently to system fonts (the type scale still applies). Add the font files and register them in `app/_layout.tsx`'s `useFonts` call to get the real faces. _(Today `_layout.tsx` only loads FontAwesome's glyphs.)_
+**Satoshi** (display) and **JetBrains Mono** are vendored in `assets/fonts/` and loaded via `expo-font` in `app/_layout.tsx` (`useFonts` gates the splash screen). RN custom fonts need **one family name per weight** — Android won't synthesize bold/medium — so each weight registers under its own name (`Satoshi`, `Satoshi-Medium`, `Satoshi-Bold`, `JetBrainsMono`, `-Medium`, `-SemiBold`, `-Bold`). The type tokens in `lib/nimbus/tokens.ts` bake the weight into `fontFamily`; **never set `fontWeight` on brand-font text** — use `fontFamilyFor(kind, weight)` from the tokens module instead.
 
 ---
 
@@ -206,7 +206,7 @@ The design tokens reference **Satoshi** (display) and **JetBrains Mono**. If the
 
 ### Per-client branding (`lib/config.ts`)
 
-`APP_CONFIG` holds the product/client names, logo `require()`, and theme color block. To deploy for a new client, swap the names, drop the logo in `assets/`, and point `clientLogo` at it.
+`APP_CONFIG` holds the product/client names and logo `require()`. To deploy for a new client, swap the names, drop the logo in `assets/`, and point `clientLogo` at it. (Colors are not per-client — they come from `lib/nimbus/tokens.ts` / `useTheme()`.)
 
 ### App identity (`app.json`)
 
@@ -248,7 +248,7 @@ ThemeProvider
             └─ RootLayoutNav  (+ ConflictModal)
 ```
 
-`RootLayoutNav` runs `useProtectedRoute` and declares the stack: `login`, `(tabs)`, `analytics`, `product/[id]`, and `modal`. (As more screens move to the root stack — orders, po, returns, notifications — add their `Stack.Screen` entries here.)
+`RootLayoutNav` runs `useProtectedRoute` and renders the router `Stack` with the native header disabled globally — every screen draws its own `ScreenHeader`. `RootLayout` also loads the brand fonts (Satoshi + JetBrains Mono, per-weight families) via `useFonts`, holding the splash screen until they're ready.
 
 ### Auth & protected routes
 
@@ -260,7 +260,7 @@ The spine of the app. Loads the user, role (from `profiles`), and RLS-filtered a
 
 ### Headers
 
-New screens use `ScreenHeader` from **`lib/nimbus/Header.tsx`** — a static 56px header (eyebrow + title, hairline bottom, no gradient). The old animated collapsing header in `lib/Header.tsx` is kept only so not-yet-migrated screens still compile.
+Every screen uses `ScreenHeader` from **`lib/nimbus/Header.tsx`** — a static 56px header (eyebrow + title, hairline bottom, no gradient). The old animated collapsing header (`lib/Header.tsx`) has been deleted.
 
 ### Data fetching
 
@@ -278,24 +278,27 @@ The app pulls from the canonical Nautilus tokens, defined for RN in **`lib/nimbu
 
 - **Color** — black background, white text, a single gold accent (`#d4a853`, bright `#e7c074`), rationed to ≤3 per screen. Semantic colors (success/warning/danger/info) plus dim variants. Translucent white/black overlay scales for hairlines and surfaces.
 - **Corners** — **sharp (0px) by default.** `radius.pill` (999) is reserved for avatars and status dots only.
-- **Type** — Satoshi (display) + JetBrains Mono. Mono is used for every label, eyebrow, badge, ID, and numeric readout (caps + letter-spacing); the type scale in `tokens.ts` exposes concrete RN `fontSize`s (`displayXl`…`bodySm`, `label`/`labelSm`/`labelLg`, `monoBody`/`monoSm`).
+- **Type** — Satoshi (display) + JetBrains Mono, loaded via `expo-font` with one family name per weight. Mono is used for every label, eyebrow, badge, ID, and numeric readout (caps + letter-spacing); the type scale in `tokens.ts` exposes concrete RN `fontSize`s (`displayXl`…`bodySm`, `label`/`labelSm`/`labelLg`, `monoBody`/`monoSm`) with the weight baked into `fontFamily`. Never pair `fontWeight` with a brand `fontFamily` — map weights through `fontFamilyFor(kind, weight)`.
 - **Spacing** — an 8px scale (`space.s2`…`s200`).
 - **Motion** — bezier easings (`motion.ease.out/smooth/inOut`) + durations (`motion.dur.*`) that plug straight into `Animated.timing`.
 - **Layout constants** — `layout` carries the spec'd numbers: 56px top/tab bars, 64px scan FAB, 16px content padding, 1px hairlines.
 - **Icons** — Lucide-style line glyphs (24×24, stroke 1.5, `currentColor`, never filled) in `lib/nimbus/Icon.tsx`; add new ones by pasting Lucide path data into the `PATHS` map.
-- **Theme** — **dark by default** everywhere except auth (light, per §8.5). `useTheme()` returns the active palette; `useThemeToggle()` flips it; the provider seeds from the system scheme.
+- **Theme** — **dark by default** everywhere except auth (light, per §8.5), regardless of the OS scheme — matching desktop. `useTheme()` returns the active palette; `useThemeToggle()` flips it; the choice persists to AsyncStorage (`nautilus_theme`) and is restored on launch.
 
 ---
 
 ## The design-system migration
 
-The app is **mid-migration** from its original look (rounded corners, maroon→navy gradient, FontAwesome, system fonts) to the Nautilus tokens above. This is deliberate and tracked in code comments ("phase 1", "phase 2"). What that means in practice:
+The migration from the app's original look (rounded corners, maroon→navy gradient, FontAwesome, system fonts) to the Nautilus tokens is **complete at the chrome level**: every screen renders `ScreenHeader` from `lib/nimbus/Header.tsx`, the legacy collapsing header (`lib/Header.tsx`) has been **deleted**, the Expo scaffold leftovers (`components/`, `constants/Colors.ts`, `app/modal.tsx`, SpaceMono) are gone, and the brand fonts load for real via `expo-font`.
 
-- **On the new chrome** — Home, Inventory, Orders + order detail, Purchase orders + PO detail, Returns, Notifications, More, Login, and the tab bar all consume `lib/nimbus/*` and the new theme keys.
-- **Still on legacy chrome** — Product detail, Map, Analytics, and Settings still use the old `lib/Header.tsx`, `LinearGradient`, and FontAwesome. They compile because `lib/theme.tsx` keeps **legacy aliases** (`primary`, `surface`, `headerGradient`, etc.) mapped onto Nautilus values (brand pink → gold, surface white → near-black, `headerGradient` flattened to a single repeated color).
-- **Token rule** — new and migrated code should consume the **new** theme keys (`accent`, `bg`, `text`, `textMuted`, `borderSubtle`, `bgElevated`, …), never the legacy aliases, which exist only to keep old screens limping along until they're converted.
+What remains of the transition:
 
-Shared interaction primitives still live in `lib/ui.tsx`: `haptic` (the tactile vocabulary — use it on every meaningful tap), `Skeleton`/`SkeletonCard`, `AnimatedCounter`, gradient/elevated cards (legacy), and `ToastProvider` (`showToast`).
+- **Legacy theme aliases** — `lib/theme.tsx` still exposes old keys (`primary`, `surface`, `headerGradient`, …) mapped onto Nautilus values for screens that haven't moved to the new keys internally. Don't add new consumers.
+- **FontAwesome** — `@expo/vector-icons` glyphs still appear on some screens; the target is the Lucide-style set in `lib/nimbus/Icon.tsx`.
+- **Inline `fontWeight` overrides** — a handful of styles spread a type token and then override `fontWeight` inline; with per-weight font families this selects the wrong face and should be replaced with `fontFamilyFor(...)`.
+- **Token rule** — new and migrated code should consume the **new** theme keys (`accent`, `bg`, `text`, `textMuted`, `borderSubtle`, `bgElevated`, …), never the legacy aliases.
+
+Shared interaction primitives live in `lib/ui.tsx`: `haptic` (the tactile vocabulary — use it on every meaningful tap), `Skeleton`/`SkeletonCard`, `AnimatedCounter`, gradient/elevated cards (legacy), and `ToastProvider` (`showToast`).
 
 ---
 
@@ -305,15 +308,14 @@ Shared interaction primitives still live in `lib/ui.tsx`: `haptic` (the tactile 
 app/                          # expo-router routes (file = screen)
 ├── _layout.tsx               # Providers + protected-route logic + stack
 ├── login.tsx                 # Email/password + biometric (light-mode locked)
-├── modal.tsx                 # Example modal route (scaffold)
 ├── +not-found.tsx · +html.tsx
-├── analytics.tsx             # 4-tab reporting (legacy chrome; "coming soon" in More)
+├── analytics.tsx             # 4-tab reporting ("coming soon" in More)
 ├── notifications.tsx         # Aggregated activity feed
 ├── returns.tsx               # Returns list + log-return sheet
 ├── purchase-orders.tsx       # PO queue
 ├── orders/[id].tsx           # Order detail + pick-run sheet
 ├── po/[id].tsx               # PO detail + receive-run sheet
-├── product/[id].tsx          # Product detail (legacy chrome)
+├── product/[id].tsx          # Product detail
 └── (tabs)/
     ├── _layout.tsx           # Custom tab bar (Home·Inventory·Orders·More) + scan FAB
     ├── index.tsx             # Home / dashboard
@@ -338,11 +340,9 @@ lib/
 ├── theme.tsx                 # Light/dark role mappings (+ legacy aliases)
 ├── config.ts                 # Per-client branding
 ├── cache.ts                  # Persistent warehouse-scoped AsyncStorage cache
-├── Header.tsx                # LEGACY collapsing header (unmigrated screens only)
 └── ui.tsx                    # haptics, skeletons, toasts, (legacy) gradient primitives
 
-components/ · constants/Colors.ts   # Expo-scaffold leftovers (mostly superseded)
-assets/                             # Logo + app icons
+assets/                       # Logo + app icons; fonts/ holds Satoshi + JetBrains Mono
 app.json · tsconfig.json · package.json
 ```
 
@@ -368,9 +368,9 @@ Add the boolean to the `Permissions` type and hook in `lib/permissions.ts`, gate
 
 Extend the `OfflineOp["type"]` union in `lib/offline.tsx`, add a `case` to `processOp` (with conflict detection) and to `forceApplyOp` (keep-mine path), then call `queueOperation(...)` from the screen's offline branch with an optimistic update.
 
-### Migrate a legacy screen
+### Finish migrating a screen's internals
 
-Swap `lib/Header.tsx` → `lib/nimbus/Header`, replace FontAwesome with `lib/nimbus/Icon`, replace `LinearGradient`/rounded styles with token-driven flat + sharp styles, and move off the legacy theme aliases onto the new keys.
+All screens are on `ScreenHeader` already; what's left on some is cosmetic: replace FontAwesome glyphs with `lib/nimbus/Icon`, move off the legacy theme aliases (`primary`, `surface`, …) onto the new keys, and replace any inline `fontWeight` override on brand-font text with `fontFamilyFor(kind, weight)` from `lib/nimbus/tokens`.
 
 ---
 
@@ -381,20 +381,18 @@ Swap `lib/Header.tsx` → `lib/nimbus/Header`, replace FontAwesome with `lib/nim
 **Stubbed / partial:**
 
 - **AI assistant** — the scan-FAB long-press is wired to a `TODO(redesign-phase-2)` no-op; the assistant modal needs to be re-extracted and connected. (It was functional before the IA rebuild.)
-- **Analytics** — screen exists but is surfaced from More as "coming soon — desktop for now," and is still on legacy chrome.
+- **Analytics** — screen exists but is surfaced from More as "coming soon — desktop for now."
 - **Pick/receive/return offline** — these runs are online-only; only register/adjust/relocate queue.
 - **PO receiving → placement** — receiving logs the scan but doesn't write `locations`; placement is a separate scanner step.
 - **Label printing** — config UI exists; Bluetooth pairing is a stub.
 - **Notifications** — computed on the fly from existing tables; no real `notifications` table / read-state yet.
-- **Fonts** — Satoshi + JetBrains Mono not loaded; system fallbacks render.
 - **Navigation** — Map/Settings are hidden tabs, so their back gesture is awkward; planned move to the stack root.
-- **Scaffold leftovers** — `components/`, `constants/Colors.ts`, `app/modal.tsx` still ship; safe to prune.
 
 ---
 
 ## Engineering notes
 
-- Build new screens on `lib/nimbus/*` + the new theme keys. Treat the legacy aliases and `lib/Header.tsx` as deprecated — touch them only to migrate a screen off them.
+- Build new screens on `lib/nimbus/*` + the new theme keys. Treat the legacy theme aliases as deprecated — touch them only to migrate a screen off them.
 - Pull every color, spacing, type, and motion value from tokens; never hard-code hex. Consistency across the suite is a hard requirement, anchored on `nimbus-design-system.md`.
 - Gate features on `usePermissions()` booleans.
 - Treat the offline path as first-class — any new mutation should consider its offline branch and conflict story, and ideally extend the queue rather than being online-only.
@@ -402,7 +400,7 @@ Swap `lib/Header.tsx` → `lib/nimbus/Header`, replace FontAwesome with `lib/nim
 
 ### Known rough edges
 
-- **Mid-migration chrome split.** Product detail, Map, Analytics, and Settings still render the old gradient/FontAwesome/rounded look; the rest is on Nautilus tokens. Expect visual inconsistency until those four are converted.
 - **Legacy theme aliases.** `lib/theme.tsx` keeps old keys (`primary`, `surface`, `headerGradient`, …) pointed at Nautilus values purely for back-compat. Don't add new consumers of them.
+- **Inline `fontWeight` on brand text.** A few styles still spread a type token and override `fontWeight`; with per-weight families that can select the wrong face — swap to `fontFamilyFor(...)`.
 - **Hidden-tab back behavior.** Back from Map/Settings jumps to the tab group, not More — deferred until they move to the stack root.
-- **No test suite.** A single Expo-scaffold snapshot test only; validate on a physical device.
+- **No test suite.** Validate on a physical device.

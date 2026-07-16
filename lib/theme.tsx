@@ -20,9 +20,11 @@
  * else is dark.
  */
 
-import { createContext, useContext, useState } from "react";
-import { useColorScheme } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { createContext, useContext, useEffect, useState } from "react";
 import { color } from "./nimbus/tokens";
+
+const THEME_STORAGE_KEY = "nautilus_theme";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DARK — the default everywhere except auth.
@@ -150,23 +152,35 @@ const ThemeContext = createContext<{ theme: ThemeColors; toggle: () => void }>({
 });
 
 /**
- * Nimbus runs dark by default everywhere except auth. We still respect the
- * system color scheme as a starting point, and let users override via the
- * Settings screen (existing `useThemeToggle` API).
+ * Nimbus runs dark by default everywhere except auth — regardless of the OS
+ * color scheme, matching the desktop app. A user override (Settings toggle)
+ * persists to AsyncStorage under `nautilus_theme` and is restored on launch.
  */
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const systemScheme = useColorScheme();
   const [override, setOverride] = useState<"light" | "dark" | null>(null);
 
-  // Default to dark for product surfaces. Auth screens can manually flip
-  // by wrapping in their own provider or by calling toggle on mount.
-  const mode = override ?? (systemScheme === "light" ? "light" : "dark");
+  // Restore the persisted choice on startup. Until it loads (and if none is
+  // stored) we render dark — the product default.
+  useEffect(() => {
+    AsyncStorage.getItem(THEME_STORAGE_KEY)
+      .then((v) => {
+        if (v === "light" || v === "dark") setOverride(v);
+      })
+      .catch(() => {
+        // Storage unavailable — stay on the dark default.
+      });
+  }, []);
+
+  const mode = override ?? "dark";
   const theme = mode === "dark" ? DARK : LIGHT;
 
   function toggle() {
     setOverride((prev) => {
-      if (prev === null) return mode === "dark" ? "light" : "dark";
-      return prev === "dark" ? "light" : "dark";
+      const next = (prev ?? "dark") === "dark" ? "light" : "dark";
+      AsyncStorage.setItem(THEME_STORAGE_KEY, next).catch(() => {
+        // Best-effort persistence — the in-session value still applies.
+      });
+      return next;
     });
   }
 

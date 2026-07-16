@@ -70,8 +70,7 @@ export function LogoWordmark({
       <View>
         <Text
           style={{
-            fontFamily: font.display,
-            fontWeight: "600",
+            fontFamily: font.displayBold, // 600 weight — never pair fontWeight with a brand face
             fontSize: s.name,
             letterSpacing: 0.5,
             lineHeight: s.name,

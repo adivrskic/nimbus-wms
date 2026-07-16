@@ -190,50 +190,59 @@ export default function InventoryScreen() {
   const [sortSheetOpen, setSortSheetOpen] = useState(false);
   const [page, setPage] = useState(1);
 
+  // Ref, not a dep — a `refreshing` dependency recreated loadProducts per
+  // pull-to-refresh and re-fired the focus effect (redundant fetches).
+  const refreshingRef = useRef(false);
+  refreshingRef.current = refreshing;
+
   // ── Data fetch ──
   const loadProducts = useCallback(async () => {
     if (!wh.warehouseId) return;
-    if (!refreshing) setLoading(true);
+    if (!refreshingRef.current) setLoading(true);
 
     const { data, error } = await supabase
       .from("products")
       .select(
         "id, name, barcode, internal_sku, category_id, categories(name), reorder_point, photo_url, created_at, updated_at, " +
-          "locations!inner(quantity, bay, level, warehouse_id, sections(code, name, color))"
+          "locations!inner(quantity, bay, level, warehouse_id, is_active, sections(code, name, color))"
       )
       .eq("locations.warehouse_id", wh.warehouseId)
       .order("created_at", { ascending: false });
 
     if (!error && data) {
-      setProducts(data as unknown as Product[]);
-      setCache("inventory", data, wh.warehouseId);
+      // Desk parity: soft-deleted slots (is_active=false) aren't on-hand.
+      const cleaned = (data as any[]).map((p) => ({
+        ...p,
+        locations: (p.locations ?? []).filter(
+          (l: any) => l.is_active !== false
+        ),
+      }));
+      setProducts(cleaned as unknown as Product[]);
+      setCache("inventory", cleaned, wh.warehouseId);
     }
     setPage(1);
     setLoading(false);
     setRefreshing(false);
-  }, [wh.warehouseId, refreshing]);
+  }, [wh.warehouseId]);
 
-  // Refetch on warehouse switch / focus.
+  // Refetch on warehouse switch / focus; offline falls back to the cache.
+  // (This used to be BOTH a focus effect and a mount effect calling
+  // loadProducts — a guaranteed double fetch on every mount.)
   useFocusEffect(
     useCallback(() => {
-      if (wh.warehouseId) loadProducts();
-    }, [wh.warehouseId, loadProducts])
+      if (!wh.warehouseId) return;
+      if (isOnline) {
+        loadProducts();
+      } else {
+        getCache<Product[]>("inventory", wh.warehouseId).then((cached) => {
+          if (cached) {
+            setProducts(cached);
+            setLoading(false);
+          }
+        });
+      }
+    }, [wh.warehouseId, isOnline, loadProducts])
   );
-
-  // Offline fallback.
-  useEffect(() => {
-    if (!wh.warehouseId) return;
-    if (isOnline) {
-      loadProducts();
-    } else {
-      getCache<Product[]>("inventory", wh.warehouseId).then((cached) => {
-        if (cached) {
-          setProducts(cached);
-          setLoading(false);
-        }
-      });
-    }
-  }, [wh.warehouseId, isOnline, loadProducts]);
 
   // ── Derived: filter + sort + paginate ──
   const filtered = useMemo(() => {

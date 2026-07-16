@@ -39,9 +39,7 @@ function RootLayoutNav() {
       {/* Every screen renders its own Nimbus ScreenHeader — the native
           header is off globally so undeclared routes don't get a second
           header bar. */}
-      <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="modal" options={{ presentation: "modal" }} />
-      </Stack>
+      <Stack screenOptions={{ headerShown: false }} />
       <ConflictModal />
     </>
   );
@@ -49,6 +47,15 @@ function RootLayoutNav() {
 
 export default function RootLayout() {
   const [loaded, error] = useFonts({
+    // Brand faces — one family name per weight (RN/Android won't synthesize
+    // weights on custom fonts; lib/nimbus/tokens.ts maps weights → these names).
+    Satoshi: require("../assets/fonts/Satoshi-Regular.otf"),
+    "Satoshi-Medium": require("../assets/fonts/Satoshi-Medium.otf"),
+    "Satoshi-Bold": require("../assets/fonts/Satoshi-Bold.otf"),
+    JetBrainsMono: require("../assets/fonts/JetBrainsMono-Regular.ttf"),
+    "JetBrainsMono-Medium": require("../assets/fonts/JetBrainsMono-Medium.ttf"),
+    "JetBrainsMono-SemiBold": require("../assets/fonts/JetBrainsMono-SemiBold.ttf"),
+    "JetBrainsMono-Bold": require("../assets/fonts/JetBrainsMono-Bold.ttf"),
     ...FontAwesome.font,
   });
 

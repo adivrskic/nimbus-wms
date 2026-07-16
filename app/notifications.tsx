@@ -23,7 +23,7 @@
  */
 
 import { useFocusEffect, useRouter } from "expo-router";
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -152,9 +152,14 @@ export default function NotificationsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [activeFilter, setActiveFilter] = useState("all");
 
+  // Kept out of `load`'s deps via a ref — a `refreshing` dependency recreated
+  // the callback per pull-to-refresh and re-fired the focus effect.
+  const refreshingRef = useRef(false);
+  refreshingRef.current = refreshing;
+
   const load = useCallback(async () => {
     if (!wh.warehouseId) return;
-    if (!refreshing) setLoading(true);
+    if (!refreshingRef.current) setLoading(true);
 
     const now = Date.now();
     const dayAgo = new Date(now - 86_400_000).toISOString();
@@ -279,7 +284,7 @@ export default function NotificationsScreen() {
           timestamp: o.delivery_date
             ? new Date(o.delivery_date).getTime()
             : new Date(o.updated_at).getTime(),
-          route: `/order/${o.id}`,
+          route: `/orders/${o.id}`,
           iconName: kindIcon(isLate ? "order_late" : "order_pending"),
         });
       }
@@ -329,7 +334,7 @@ export default function NotificationsScreen() {
     setEvents(out);
     setLoading(false);
     setRefreshing(false);
-  }, [wh.warehouseId, refreshing]);
+  }, [wh.warehouseId]);
 
   useFocusEffect(
     useCallback(() => {

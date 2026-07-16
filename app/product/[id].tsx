@@ -18,7 +18,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ScreenHeader } from "../../lib/nimbus/Header";
 import { Icon } from "../../lib/nimbus/Icon";
-import { color, layout, radius, space, type } from "../../lib/nimbus/tokens";
+import { color, fontFamilyFor, layout, radius, space, type } from "../../lib/nimbus/tokens";
 import {
   applyOrQueueAdjustment,
   fetchReasons,
@@ -93,6 +93,13 @@ export default function ProductDetailScreen() {
       )
       .eq("id", id)
       .single();
+    // Desk parity: soft-deleted slots (is_active=false, e.g. QC-failed stock
+    // pending vendor return) don't count as on-hand and aren't shown.
+    if (data?.locations) {
+      data.locations = (data.locations as any[]).filter(
+        (l) => l.is_active !== false
+      );
+    }
     setProduct(data);
     setLoading(false);
   }
@@ -110,10 +117,15 @@ export default function ProductDetailScreen() {
   async function openRelocate(locationIdx: number = 0) {
     haptic.medium();
     setRelocateLocationIdx(locationIdx);
+    // Sections must come from the warehouse the LOCATION row lives in, not the
+    // active facility — otherwise relocating a row from facility B while A is
+    // active stamped it with a section belonging to A (corrupt geometry).
+    const locWarehouseId =
+      product?.locations?.[locationIdx]?.warehouse_id ?? warehouseId;
     const { data: secs } = await supabase
       .from("sections")
       .select("id, code, name, color, total_bays, total_levels")
-      .eq("warehouse_id", warehouseId)
+      .eq("warehouse_id", locWarehouseId)
       .order("code");
     setSections(secs || []);
     const currentLoc = product?.locations?.[locationIdx];
@@ -141,7 +153,8 @@ export default function ProductDetailScreen() {
     if (!isOnline) {
       await queueOperation({
         type: "relocate",
-        warehouseId: warehouseId || "",
+        warehouseId: currentLoc.warehouse_id ?? warehouseId ?? "",
+        orgId: orgId || undefined,
         payload: {
           locationId: currentLoc.id,
           newSectionId: selectedSection.id,
@@ -179,14 +192,19 @@ export default function ProductDetailScreen() {
     const {
       data: { user },
     } = await supabase.auth.getUser();
-    await supabase.from("scan_history").insert({
+    // org_id is NOT NULL on scan_history — omitting it silently dropped every
+    // relocate audit row. Best-effort, but log rejections in dev.
+    const { error: audErr } = await supabase.from("scan_history").insert({
+      org_id: orgId,
       product_id: product.id,
-      warehouse_id: warehouseId,
+      warehouse_id: currentLoc.warehouse_id ?? warehouseId,
       scanned_by: user?.id,
       action: "relocate",
       from_location: fromStr,
       to_location: toStr,
     });
+    if (audErr && __DEV__)
+      console.warn("[relocate] scan_history failed", audErr);
     haptic.success();
     Alert.alert(
       "Relocated",
@@ -237,10 +255,13 @@ export default function ProductDetailScreen() {
 
     if (!isOnline) {
       // Offline: queue per-location ops for later sync; optimistic UI.
+      // Replay goes through the same governance RPC as the online path.
       for (const [locationId, delta] of entries) {
+        const loc = product.locations.find((l: any) => l.id === locationId);
         await queueOperation({
           type: "adjust",
-          warehouseId: warehouseId || "",
+          warehouseId: loc?.warehouse_id ?? warehouseId ?? "",
+          orgId: orgId || undefined,
           payload: { locationId, delta, productId: product.id },
         });
       }
@@ -500,7 +521,10 @@ export default function ProductDetailScreen() {
     (sum: number, loc: any) => sum + (loc.quantity || 0),
     0
   );
-  const isLowStock = totalQty <= 5 && totalQty > 0;
+  // Same rule as the inventory list: low = at/below the product's own
+  // reorder point (a hardcoded <=5 disagreed with every other surface).
+  const reorderPoint = product.reorder_point ?? 0;
+  const isLowStock = reorderPoint > 0 && totalQty > 0 && totalQty <= reorderPoint;
   const ACTION_LABELS: Record<string, string> = {
     register: "Registered",
     locate: "Located",
@@ -590,6 +614,7 @@ export default function ProductDetailScreen() {
                 { backgroundColor: T.bgElevated, borderColor: T.borderSubtle },
               ]}
               activeOpacity={0.8}
+              disabled={!perms.canEditProducts}
               onPress={() => {
                 Alert.alert("Change Photo", "Choose a source", [
                   { text: "Cancel", style: "cancel" },
@@ -614,6 +639,7 @@ export default function ProductDetailScreen() {
                 { backgroundColor: T.bgElevated, borderColor: T.borderSubtle },
               ]}
               activeOpacity={0.7}
+              disabled={!perms.canEditProducts}
               onPress={() => {
                 Alert.alert("Add Photo", "Choose a source", [
                   { text: "Cancel", style: "cancel" },
@@ -652,6 +678,7 @@ export default function ProductDetailScreen() {
                 <TouchableOpacity
                   style={{ flex: 1 }}
                   activeOpacity={0.8}
+                  disabled={!perms.canRelocateProducts}
                   onPress={() => openRelocate(idx)}
                 >
                   <Text style={[s.locationTitle, { color: T.text }]}>
@@ -679,6 +706,7 @@ export default function ProductDetailScreen() {
                         borderColor: T.borderSubtle,
                       },
                     ]}
+                    disabled={!perms.canAdjustQuantity}
                     onPress={() => adjustQuantity(loc.id, -1)}
                   >
                     <Icon name="minus" size={14} color={T.textMuted} />
@@ -698,6 +726,7 @@ export default function ProductDetailScreen() {
                       s.qtyBtn,
                       { backgroundColor: T.accentDim, borderColor: T.accent },
                     ]}
+                    disabled={!perms.canAdjustQuantity}
                     onPress={() => adjustQuantity(loc.id, 1)}
                   >
                     <Icon name="plus" size={14} color={T.accent} />
@@ -807,7 +836,7 @@ export default function ProductDetailScreen() {
                   onPress={applyPending}
                   disabled={applyingAdjust}
                 >
-                  <Text style={[type.label, { color: "#000" }]}>
+                  <Text style={[type.label, { color: color.black }]}>
                     {applyingAdjust ? "APPLYING…" : "APPLY"}
                   </Text>
                 </TouchableOpacity>
@@ -1072,7 +1101,7 @@ export default function ProductDetailScreen() {
                         color:
                           selectedSection?.id === sec.id ? T.accent : T.text,
                       },
-                      selectedSection?.id === sec.id && { fontWeight: "700" },
+                      selectedSection?.id === sec.id && { fontFamily: fontFamilyFor("display", "700") },
                     ]}
                   >
                     {sec.code} {"\u2014"} {sec.name}
@@ -1491,7 +1520,7 @@ const s = StyleSheet.create({
     ...type.monoBody,
     fontSize: 20,
     lineHeight: 24,
-    fontWeight: "700",
+    fontFamily: fontFamilyFor("mono", "700"),
   },
   kpiLabel: { ...type.labelSm, marginTop: 4 },
 
@@ -1537,7 +1566,7 @@ const s = StyleSheet.create({
   locationAccent: { width: 4, alignSelf: "stretch" },
   locationTitle: {
     ...type.body,
-    fontWeight: "700",
+    fontFamily: fontFamilyFor("display", "700"),
     padding: space.s16,
     paddingBottom: 2,
   },
@@ -1598,7 +1627,7 @@ const s = StyleSheet.create({
     marginBottom: space.s16,
     gap: space.s8,
   },
-  lowStockText: { ...type.bodySm, fontWeight: "500" },
+  lowStockText: { ...type.bodySm, fontFamily: fontFamilyFor("display", "500") },
 
   sectionLabel: {
     ...type.label,
@@ -1623,7 +1652,7 @@ const s = StyleSheet.create({
   detailLabel: { ...type.label, flex: 1 },
   detailValue: {
     ...type.body,
-    fontWeight: "500",
+    fontFamily: fontFamilyFor("display", "500"),
     textAlign: "right",
     maxWidth: "55%",
   },
@@ -1658,7 +1687,7 @@ const s = StyleSheet.create({
   dateRow: { flexDirection: "row", gap: space.s12, marginBottom: space.s12 },
   dateItem: { flex: 1, borderWidth: layout.hairlineWidth, padding: space.s16 },
   dateLabel: { ...type.labelSm, marginBottom: 4 },
-  dateValue: { ...type.body, fontWeight: "600" },
+  dateValue: { ...type.body, fontFamily: fontFamilyFor("display", "600") },
 
   // Actions
   actionRow: {
@@ -1675,7 +1704,7 @@ const s = StyleSheet.create({
     justifyContent: "center",
     gap: space.s8,
   },
-  relocateBtnText: { ...type.body, fontWeight: "700" },
+  relocateBtnText: { ...type.body, fontFamily: fontFamilyFor("display", "700") },
   actionBtn: {
     flex: 0.7,
     paddingVertical: space.s16,
@@ -1685,7 +1714,7 @@ const s = StyleSheet.create({
     borderWidth: layout.hairlineWidth,
     gap: space.s8,
   },
-  actionBtnText: { ...type.bodySm, fontWeight: "600" },
+  actionBtnText: { ...type.bodySm, fontFamily: fontFamilyFor("display", "600") },
 
   // Not-found
   emptyCircle: {
@@ -1763,7 +1792,7 @@ const s = StyleSheet.create({
     alignItems: "center",
     marginRight: space.s8,
   },
-  numBtnText: { ...type.monoBody, fontSize: 16, fontWeight: "600" },
+  numBtnText: { ...type.monoBody, fontSize: 16, fontFamily: fontFamilyFor("mono", "600") },
   confirmBtn: {
     paddingVertical: space.s16,
     flexDirection: "row",
@@ -1772,7 +1801,7 @@ const s = StyleSheet.create({
     gap: space.s8,
     marginTop: space.s8,
   },
-  confirmBtnText: { ...type.body, fontWeight: "700" },
+  confirmBtnText: { ...type.body, fontFamily: fontFamilyFor("display", "700") },
 
   // Edit form
   editInput: {

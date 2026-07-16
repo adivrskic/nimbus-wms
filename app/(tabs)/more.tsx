@@ -31,7 +31,7 @@ import { ScreenHeader } from "../../lib/nimbus/Header";
 import { Icon, IconName } from "../../lib/nimbus/Icon";
 import { layout, space, type } from "../../lib/nimbus/tokens";
 import { Permissions, usePermissions } from "../../lib/permissions";
-import { supabase } from "../../lib/supabase";
+import { signOutDevice } from "../../lib/supabase";
 import { useTheme } from "../../lib/theme";
 import { haptic } from "../../lib/ui";
 import { useWarehouse } from "../../lib/warehouse";
@@ -78,6 +78,12 @@ const ITEMS: MoreItem[] = [
     label: "Cycle counts",
     hint: "Scheduled blind counts for this facility",
     route: "/cycle-counts",
+  },
+  {
+    icon: "layout-grid",
+    label: "Work orders",
+    hint: "Assemble kits and complete builds",
+    route: "/work-orders",
   },
   {
     icon: "rotate-ccw",
@@ -140,7 +146,8 @@ export default function MoreScreen() {
           style: "destructive",
           onPress: async () => {
             haptic.medium();
-            await supabase.auth.signOut();
+            // Scrubs the offline queue + caches too — shared-scanner safety.
+            await signOutDevice();
           },
         },
       ]

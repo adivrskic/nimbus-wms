@@ -47,12 +47,12 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { ScreenHeader } from "../../lib/nimbus/Header";
 import { Icon } from "../../lib/nimbus/Icon";
-import { layout, space, type } from "../../lib/nimbus/tokens";
+import { color, layout, space, type } from "../../lib/nimbus/tokens";
 import { useOffline } from "../../lib/offline";
 import { usePermissions } from "../../lib/permissions";
 import { supabase } from "../../lib/supabase";
 import { useTheme } from "../../lib/theme";
-import { haptic } from "../../lib/ui";
+import { haptic, showToast } from "../../lib/ui";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TYPES
@@ -207,10 +207,14 @@ export default function PoDetailScreen() {
           style: "destructive",
           onPress: async () => {
             haptic.medium();
-            await supabase
+            const { error } = await supabase
               .from("purchase_orders")
               .update({ status: "cancelled" })
               .eq("id", po.id);
+            if (error) {
+              Alert.alert("Couldn't cancel", error.message);
+              return;
+            }
             loadPo();
           },
         },
@@ -582,11 +586,11 @@ export default function PoDetailScreen() {
             ]}
             accessibilityLabel="Start receive run"
           >
-            <Icon name="barcode" size={16} color="#000" strokeWidth={1.75} />
+            <Icon name="barcode" size={16} color={color.black} strokeWidth={1.75} />
             <Text
               style={[
                 type.label,
-                { color: "#000", letterSpacing: 2, marginLeft: space.s8 },
+                { color: color.black, letterSpacing: 2, marginLeft: space.s8 },
               ]}
             >
               {po.status === "partially_received"
@@ -603,24 +607,46 @@ export default function PoDetailScreen() {
         items={po.po_line_items}
         onItemReceived={() => loadPo()}
         onComplete={async () => {
-          // Determine final status based on item state
+          // supabase-js returns errors in the result — it never throws, so
+          // the old try/catch reported success while the DB stayed stale.
           const allDone = po.po_line_items.every((it) => isFullyReceived(it));
           const next: PoStatus = allDone
             ? "fully_received"
             : "partially_received";
-          try {
-            await supabase
+          const { error } = await supabase
+            .from("purchase_orders")
+            .update({ status: next })
+            .eq("id", po.id);
+          if (error) {
+            Alert.alert("Couldn't complete", error.message);
+            return;
+          }
+          haptic.heavy();
+          setReceiveOpen(false);
+          await loadPo();
+        }}
+        onClose={async () => {
+          setReceiveOpen(false);
+          // Ending a run mid-way used to leave the PO status stale ("sent")
+          // even after lines were received — recompute on the way out too.
+          const received = po.po_line_items.filter(
+            (it) => receivedQty(it) > 0
+          ).length;
+          if (received > 0 && po.status === "sent") {
+            const allDone = po.po_line_items.every((it) =>
+              isFullyReceived(it)
+            );
+            const { error } = await supabase
               .from("purchase_orders")
-              .update({ status: next })
+              .update({
+                status: allDone ? "fully_received" : "partially_received",
+              })
               .eq("id", po.id);
-            haptic.heavy();
-            setReceiveOpen(false);
+            if (error && __DEV__)
+              console.warn("[po] end-run status recompute failed", error);
             await loadPo();
-          } catch (e: any) {
-            Alert.alert("Couldn't complete", e?.message ?? "Try again.");
           }
         }}
-        onClose={() => setReceiveOpen(false)}
         theme={T}
         isOnline={isOnline}
       />
@@ -770,6 +796,14 @@ function ReceiveRunSheet({
 
   function receiveItem(item: PoLineItem) {
     if (isFullyReceived(item) || receivingId) return;
+    // Receives write directly — they are NOT queued by the offline layer.
+    if (!isOnline) {
+      Alert.alert(
+        "You're offline",
+        "Receiving needs a connection — nothing is queued offline. Reconnect and try again."
+      );
+      return;
+    }
     if (item.products?.track_lots && item.product_id) {
       haptic.light();
       setLotTarget(item);
@@ -825,7 +859,10 @@ function ReceiveRunSheet({
         lotId = await resolveLot(item, lot, userId);
       }
 
-      const { error: itemErr } = await supabase
+      // Compare-and-set: two devices receiving the same line used to both
+      // "succeed" from stale state. Only apply if the received qty is still
+      // what this device loaded.
+      let casQuery = supabase
         .from("po_line_items")
         .update({
           quantity_received: item.quantity_expected,
@@ -836,7 +873,17 @@ function ReceiveRunSheet({
             : {}),
         })
         .eq("id", item.id);
+      casQuery =
+        item.quantity_received == null
+          ? casQuery.is("quantity_received", null)
+          : casQuery.eq("quantity_received", item.quantity_received);
+      const { data: casRows, error: itemErr } = await casQuery.select("id");
       if (itemErr) throw itemErr;
+      if (!casRows || casRows.length === 0) {
+        showToast("Line was updated on another device — refreshed", "error");
+        onItemReceived();
+        return;
+      }
 
       // Scan history — write only if a product_id exists; freeform line
       // items without a catalog product can't link to scan_history.product_id
@@ -932,7 +979,7 @@ function ReceiveRunSheet({
             <Text
               style={[type.labelSm, { color: T.warning, letterSpacing: 1.5 }]}
             >
-              OFFLINE · RECEIVES WILL SYNC ON RECONNECT
+              OFFLINE · RECEIVING PAUSED UNTIL RECONNECT
             </Text>
           </View>
         ) : null}
@@ -1032,11 +1079,11 @@ function ReceiveRunSheet({
                 allReceived ? "Complete receipt" : "Save partial receipt"
               }
             >
-              <Icon name="check" size={16} color="#000" strokeWidth={2} />
+              <Icon name="check" size={16} color={color.black} strokeWidth={2} />
               <Text
                 style={[
                   type.label,
-                  { color: "#000", letterSpacing: 2, marginLeft: space.s8 },
+                  { color: color.black, letterSpacing: 2, marginLeft: space.s8 },
                 ]}
               >
                 {allReceived ? "COMPLETE RECEIPT" : "SAVE PARTIAL"}
@@ -1193,7 +1240,7 @@ function LotCaptureOverlay({
             { backgroundColor: pressed ? T.accentBright : T.accent },
           ]}
         >
-          <Text style={[type.label, { color: "#000", letterSpacing: 2 }]}>
+          <Text style={[type.label, { color: color.black, letterSpacing: 2 }]}>
             RECEIVE WITH LOT
           </Text>
         </Pressable>

@@ -132,104 +132,135 @@ export const radius = {
 } as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Type — Satoshi (display) + JetBrains Mono. If unloaded, RN falls back
-// silently to system. Engineering loads via expo-font; see README.
+// Type — Satoshi (display) + JetBrains Mono, loaded via expo-font in
+// `app/_layout.tsx`. RN custom fonts need one family name PER WEIGHT —
+// Android won't synthesize bold/medium from a single face, and setting
+// `fontWeight` alongside a custom family can select the wrong (system)
+// face. So: pick the family via `fontFamilyFor(...)` / the `font` map and
+// do NOT set `fontWeight` on brand-font text.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const font = {
+  // Satoshi (display) — weights 400 / 500 / 600+ map to these faces.
   display: "Satoshi",
-  mono: "JetBrains Mono",
+  displayMedium: "Satoshi-Medium",
+  displayBold: "Satoshi-Bold",
+  // JetBrains Mono — weights 400 / 500 / 600 / 700.
+  mono: "JetBrainsMono",
+  monoMedium: "JetBrainsMono-Medium",
+  monoSemiBold: "JetBrainsMono-SemiBold",
+  monoBold: "JetBrainsMono-Bold",
 } as const;
+
+type WeightInput =
+  | number
+  | "100" | "200" | "300" | "400" | "500" | "600" | "700" | "800" | "900"
+  | "normal"
+  | "bold";
+
+/**
+ * Map an inline weight to the loaded per-weight family name.
+ * Display (Satoshi): 400→Regular, 500→Medium, 600+→Bold (no SemiBold face).
+ * Mono (JetBrains): 400→Regular, 500→Medium, 600→SemiBold, 700+→Bold.
+ *
+ * Use this instead of `fontWeight` when a style needs a heavier/lighter
+ * brand face, e.g. `{ fontFamily: fontFamilyFor("mono", "600") }`.
+ */
+export function fontFamilyFor(kind: "display" | "mono", weight: WeightInput): string {
+  const w =
+    weight === "normal" ? 400 :
+    weight === "bold" ? 700 :
+    typeof weight === "number" ? weight : parseInt(weight, 10);
+
+  if (kind === "display") {
+    if (w >= 600) return font.displayBold;
+    if (w >= 500) return font.displayMedium;
+    return font.display;
+  }
+  if (w >= 700) return font.monoBold;
+  if (w >= 600) return font.monoSemiBold;
+  if (w >= 500) return font.monoMedium;
+  return font.mono;
+}
 
 /**
  * Type scale. Web uses `display-xl` / `display-md` etc.; here we surface
  * concrete pixel sizes for RN's `fontSize` prop. Use mono caps with
- * letterSpacing for labels/eyebrows.
+ * letterSpacing for labels/eyebrows. Weight is baked into `fontFamily`
+ * (per-weight faces) — don't add `fontWeight` on top of these.
  */
 export const type = {
   // Display / Satoshi
   displayXl: {
-    fontFamily: font.display,
+    fontFamily: font.displayBold, // 700
     fontSize: 48,
     lineHeight: 52,
-    fontWeight: "700" as const,
     letterSpacing: -0.8,
   },
   displayLg: {
-    fontFamily: font.display,
+    fontFamily: font.displayBold, // 700
     fontSize: 32,
     lineHeight: 36,
-    fontWeight: "700" as const,
     letterSpacing: -0.5,
   },
   displayMd: {
-    fontFamily: font.display,
+    fontFamily: font.displayBold, // 600 → Bold face (no Satoshi SemiBold)
     fontSize: 22,
     lineHeight: 28,
-    fontWeight: "600" as const,
     letterSpacing: -0.2,
   },
   displayXs: {
-    fontFamily: font.display,
+    fontFamily: font.displayBold, // 600 → Bold face
     fontSize: 18,
     lineHeight: 24,
-    fontWeight: "600" as const,
   },
   bodyLg: {
-    fontFamily: font.display,
+    fontFamily: font.display, // 400
     fontSize: 16,
     lineHeight: 24,
-    fontWeight: "400" as const,
   },
   body: {
-    fontFamily: font.display,
+    fontFamily: font.display, // 400
     fontSize: 14,
     lineHeight: 20,
-    fontWeight: "400" as const,
   },
   bodySm: {
-    fontFamily: font.display,
+    fontFamily: font.display, // 400
     fontSize: 13,
     lineHeight: 18,
-    fontWeight: "400" as const,
   },
 
   // Mono / JetBrains — labels, eyebrows, badges, numerics in tables, IDs.
   label: {
-    fontFamily: font.mono,
+    fontFamily: font.monoMedium, // 500
     fontSize: 11,
     lineHeight: 14,
-    fontWeight: "500" as const,
     letterSpacing: 2,
     textTransform: "uppercase" as const,
   },
   labelSm: {
-    fontFamily: font.mono,
+    fontFamily: font.monoMedium, // 500
     fontSize: 10,
     lineHeight: 12,
-    fontWeight: "500" as const,
     letterSpacing: 1.5,
     textTransform: "uppercase" as const,
   },
   labelLg: {
-    fontFamily: font.mono,
+    fontFamily: font.monoMedium, // 500
     fontSize: 12,
     lineHeight: 16,
-    fontWeight: "500" as const,
     letterSpacing: 2.5,
     textTransform: "uppercase" as const,
   },
   monoBody: {
-    fontFamily: font.mono,
+    fontFamily: font.mono, // 400
     fontSize: 13,
     lineHeight: 20,
-    fontWeight: "400" as const,
   },
   monoSm: {
-    fontFamily: font.mono,
+    fontFamily: font.mono, // 400
     fontSize: 11,
     lineHeight: 16,
-    fontWeight: "400" as const,
   },
 } as const;
 

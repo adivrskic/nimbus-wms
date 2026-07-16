@@ -47,12 +47,13 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { ScreenHeader } from "../../lib/nimbus/Header";
 import { Icon } from "../../lib/nimbus/Icon";
-import { layout, space, type } from "../../lib/nimbus/tokens";
+import { color, layout, space, type } from "../../lib/nimbus/tokens";
 import { useOffline } from "../../lib/offline";
 import { supabase } from "../../lib/supabase";
 import { useTheme } from "../../lib/theme";
 import { haptic } from "../../lib/ui";
 import { useCategories, type Category } from "../../lib/categories";
+import { usePermissions } from "../../lib/permissions";
 import { useWarehouse } from "../../lib/warehouse";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -89,6 +90,7 @@ export default function ScannerScreen() {
   const T = useTheme();
   const router = useRouter();
   const wh = useWarehouse();
+  const perms = usePermissions();
   const { isOnline } = useOffline();
   const insets = useSafeAreaInsets();
 
@@ -162,20 +164,32 @@ export default function ScannerScreen() {
   async function runLookup() {
     if (!barcode.trim() || !wh.warehouseId) return;
 
-    const { data } = await supabase
+    // Org-scoped: without it, a user in several orgs could match another
+    // org's product (and maybeSingle() errored on duplicate barcodes across
+    // orgs, misreporting the item as unregistered).
+    const { data: rows, error } = await supabase
       .from("products")
       .select(
-        "id, name, internal_sku, categories(name), locations(bay, level, quantity, sections(code, name, color))"
+        "id, name, internal_sku, categories(name), locations(bay, level, quantity, warehouse_id, is_active, sections(code, name, color))"
       )
+      .eq("org_id", orgId)
       .eq("barcode", barcode.trim())
-      .maybeSingle();
+      .limit(1);
+    if (error) {
+      Alert.alert("Lookup failed", error.message);
+      return;
+    }
 
+    const data = rows?.[0];
     if (data) {
-      // Filter locations to current warehouse — done client-side since
-      // the nested filter isn't trivially expressible in PostgREST here
+      // Show only THIS facility's active slots — the card otherwise presented
+      // another facility's stock as if it were local.
       const filtered = {
         ...(data as any),
-        locations: (data as any).locations ?? [],
+        locations: ((data as any).locations ?? []).filter(
+          (l: any) =>
+            l.warehouse_id === wh.warehouseId && l.is_active !== false
+        ),
       } as ExistingProduct;
       setExisting(filtered);
     } else {
@@ -399,7 +413,7 @@ export default function ScannerScreen() {
                 accessibilityLabel="Toggle flash"
               >
                 <Icon
-                  name={flashOn ? "alert-circle" : "settings"}
+                  name="circle"
                   size={14}
                   color={flashOn ? T.accent : "rgba(255,255,255,0.7)"}
                 />
@@ -502,7 +516,7 @@ export default function ScannerScreen() {
                 <Icon
                   name="search"
                   size={14}
-                  color={barcode.trim() ? "#000" : T.textDim}
+                  color={barcode.trim() ? color.black : T.textDim}
                 />
               </Pressable>
             )}
@@ -528,6 +542,22 @@ export default function ScannerScreen() {
               theme={T}
               onView={() => router.push(`/product/${existing.id}` as any)}
             />
+          ) : !perms.canRegisterProducts ? (
+            <Text
+              style={[
+                type.bodySm,
+                {
+                  color: T.textMuted,
+                  textAlign: "center",
+                  paddingVertical: space.s16,
+                  paddingHorizontal: space.s16,
+                  lineHeight: 20,
+                },
+              ]}
+            >
+              Not in the catalog. Registering new products needs the "Manage
+              catalog" permission — ask a manager to add this item.
+            </Text>
           ) : (
             <RegisterForm
               theme={T}

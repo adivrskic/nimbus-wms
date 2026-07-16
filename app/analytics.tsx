@@ -12,7 +12,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ScreenHeader } from "../lib/nimbus/Header";
 import { Icon, IconName } from "../lib/nimbus/Icon";
-import { color, layout, radius, space, type } from "../lib/nimbus/tokens";
+import { color, fontFamilyFor, layout, radius, space, type } from "../lib/nimbus/tokens";
 import { usePermissions } from "../lib/permissions";
 import { supabase } from "../lib/supabase";
 import { useTheme } from "../lib/theme";
@@ -32,15 +32,35 @@ const ACTION_CONFIG: Record<
   { label: string; color: string; icon: IconName }
 > = {
   // Nimbus palette only: semantic colors + gold family + grays.
-  register: { label: "Registered", color: "#22c55e", icon: "plus" },
-  locate: { label: "Located", color: "#60a5fa", icon: "search" },
-  relocate: { label: "Relocated", color: "#d97706", icon: "move" },
-  pick: { label: "Picked", color: "#d4a853", icon: "package" },
-  receive: { label: "Received", color: "#e7c074", icon: "truck" },
-  return: { label: "Returned", color: "#ef4444", icon: "rotate-ccw" },
-  cycle_count: { label: "Counted", color: "#a3a3a3", icon: "check" },
-  adjust: { label: "Adjusted", color: "#737373", icon: "sliders" },
+  register: { label: "Registered", color: color.success, icon: "plus" },
+  locate: { label: "Located", color: color.info, icon: "search" },
+  relocate: { label: "Relocated", color: color.warning, icon: "move" },
+  pick: { label: "Picked", color: color.accent, icon: "package" },
+  receive: { label: "Received", color: color.accentBright, icon: "truck" },
+  return: { label: "Returned", color: color.danger, icon: "rotate-ccw" },
+  cycle_count: { label: "Counted", color: color.gray2, icon: "check" },
+  adjust: { label: "Adjusted", color: color.gray3, icon: "sliders" },
 };
+
+/**
+ * PostgREST silently caps any select at 1000 rows, which quietly truncated
+ * every distribution on this screen for real-sized data. Page through with
+ * .range() up to a hard cap instead.
+ */
+async function fetchAllPages<T = any>(
+  make: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: any }>,
+  pageSize = 1000,
+  maxPages = 10
+): Promise<T[]> {
+  const out: T[] = [];
+  for (let p = 0; p < maxPages; p++) {
+    const { data, error } = await make(p * pageSize, (p + 1) * pageSize - 1);
+    if (error || !data) break;
+    out.push(...data);
+    if (data.length < pageSize) break;
+  }
+  return out;
+}
 
 export default function AnalyticsScreen() {
   const T = useTheme();
@@ -121,56 +141,70 @@ export default function AnalyticsScreen() {
   async function loadOverview() {
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
-    const [
-      { data: locs },
-      { count: sectionCount },
-      { count: totalScans },
-      { count: scansToday },
-      { data: scanActions },
-      { data: sectionData },
-    ] = await Promise.all([
-      supabase
-        .from("locations")
-        .select("product_id, quantity, products(categories(name))")
-        .eq("warehouse_id", warehouseId),
-      supabase
-        .from("sections")
-        .select("*", { count: "exact", head: true })
-        .eq("warehouse_id", warehouseId),
-      supabase
-        .from("scan_history")
-        .select("*", { count: "exact", head: true })
-        .eq("warehouse_id", warehouseId),
-      supabase
-        .from("scan_history")
-        .select("*", { count: "exact", head: true })
-        .eq("warehouse_id", warehouseId)
-        .gte("scanned_at", todayStart.toISOString()),
-      supabase
-        .from("scan_history")
-        .select("action")
-        .eq("warehouse_id", warehouseId),
-      supabase
-        .from("sections")
-        .select("id, code, name, color, total_bays, total_levels")
-        .eq("warehouse_id", warehouseId),
-    ]);
-    const allLocs = locs || [];
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 86_400_000).toISOString();
+    const [locsAll, sectionsRes, totalScansRes, scansTodayRes, scanActions] =
+      await Promise.all([
+        fetchAllPages((from, to) =>
+          supabase
+            .from("locations")
+            .select(
+              "product_id, section_id, quantity, is_active, products(reorder_point, categories(name))"
+            )
+            .eq("warehouse_id", warehouseId)
+            .order("id")
+            .range(from, to)
+        ),
+        supabase
+          .from("sections")
+          .select("id, code, name, color, total_bays, total_levels")
+          .eq("warehouse_id", warehouseId),
+        supabase
+          .from("scan_history")
+          .select("*", { count: "exact", head: true })
+          .eq("warehouse_id", warehouseId),
+        supabase
+          .from("scan_history")
+          .select("*", { count: "exact", head: true })
+          .eq("warehouse_id", warehouseId)
+          .gte("scanned_at", todayStart.toISOString()),
+        // Action mix over the last 30 days — the all-time version both
+        // truncated at 1000 rows and stopped meaning anything.
+        fetchAllPages((from, to) =>
+          supabase
+            .from("scan_history")
+            .select("action")
+            .eq("warehouse_id", warehouseId)
+            .gte("scanned_at", thirtyDaysAgo)
+            .order("scanned_at", { ascending: false })
+            .range(from, to)
+        ),
+      ]);
+    // Desk parity: soft-deleted slots don't count as on-hand.
+    const allLocs = locsAll.filter((l: any) => l.is_active !== false);
     const uniqueProducts = new Set(allLocs.map((l: any) => l.product_id)).size;
     const totalStock = allLocs.reduce(
       (sum: number, l: any) => sum + (l.quantity || 0),
       0
     );
-    const lowCount = allLocs.filter(
-      (l: any) => l.quantity <= 5 && l.quantity > 0
+    // Low = product TOTAL at/below its own reorder point (the old per-slot
+    // "quantity <= 5" disagreed with the Inventory tab and the Home KPI).
+    const perProduct: Record<string, { total: number; reorder: number }> = {};
+    allLocs.forEach((l: any) => {
+      const id = l.product_id;
+      if (!perProduct[id])
+        perProduct[id] = { total: 0, reorder: l.products?.reorder_point ?? 0 };
+      perProduct[id].total += l.quantity || 0;
+    });
+    const lowCount = Object.values(perProduct).filter(
+      (p) => p.reorder > 0 && p.total > 0 && p.total <= p.reorder
     ).length;
 
     setStats({
       products: uniqueProducts,
       stock: totalStock,
-      scans: totalScans || 0,
-      scansToday: scansToday || 0,
-      sections: sectionCount || 0,
+      scans: totalScansRes.count || 0,
+      scansToday: scansTodayRes.count || 0,
+      sections: (sectionsRes.data || []).length,
       lowStock: lowCount,
     });
 
@@ -186,12 +220,8 @@ export default function AnalyticsScreen() {
         .sort((a, b) => b.count - a.count)
     );
 
-    // Section stock with capacity
-    const secMap: Record<string, any> = {};
-    allLocs.forEach((l: any) => {
-      // We'll match by section from sectionData
-    });
-    const sections = sectionData || [];
+    // Section stock with capacity — reuses the rows above instead of a second
+    // full locations fetch.
     const secStockMap: Record<
       string,
       {
@@ -202,21 +232,16 @@ export default function AnalyticsScreen() {
         capacity: number;
       }
     > = {};
-    sections.forEach((sec: any) => {
+    (sectionsRes.data || []).forEach((sec: any) => {
       secStockMap[sec.id] = {
         code: sec.code,
         name: sec.name,
-        color: sec.color || "#737373",
+        color: sec.color || color.gray3,
         quantity: 0,
         capacity: sec.total_bays * sec.total_levels,
       };
     });
-    // Get location counts by section
-    const { data: locBySec } = await supabase
-      .from("locations")
-      .select("section_id, quantity")
-      .eq("warehouse_id", warehouseId);
-    (locBySec || []).forEach((loc: any) => {
+    allLocs.forEach((loc: any) => {
       if (secStockMap[loc.section_id])
         secStockMap[loc.section_id].quantity += loc.quantity || 0;
     });
@@ -224,9 +249,9 @@ export default function AnalyticsScreen() {
       Object.values(secStockMap).sort((a, b) => b.quantity - a.quantity)
     );
 
-    // Action breakdown
+    // Action breakdown (last 30d)
     const actMap: Record<string, number> = {};
-    (scanActions || []).forEach((sc: any) => {
+    scanActions.forEach((sc: any) => {
       actMap[sc.action] = (actMap[sc.action] || 0) + 1;
     });
     setActionBreakdown(
@@ -237,54 +262,112 @@ export default function AnalyticsScreen() {
   }
 
   async function loadInventory() {
-    const [{ data: lowStock }, { data: reorder }] = await Promise.all([
+    // Per-PRODUCT totals: comparing a single slot's qty against the product's
+    // reorder point flagged multi-slot products that were actually healthy.
+    const rows = await fetchAllPages((from, to) =>
       supabase
         .from("locations")
         .select(
-          "quantity, products(id, name, barcode, categories(name), reorder_point)"
+          "quantity, is_active, products!inner(id, name, barcode, reorder_point, categories(name))"
         )
         .eq("warehouse_id", warehouseId)
-        .lte("quantity", 5)
-        .gt("quantity", 0)
-        .order("quantity", { ascending: true })
-        .limit(20),
-      supabase
-        .from("locations")
-        .select("quantity, products!inner(id, name, barcode, reorder_point)")
-        .eq("warehouse_id", warehouseId),
-    ]);
-    setLowStockItems(lowStock || []);
-    // Filter reorder: quantity <= reorder_point
-    const reorderFiltered = (reorder || []).filter(
-      (loc: any) =>
-        loc.products?.reorder_point &&
-        loc.quantity <= loc.products.reorder_point
+        .order("id")
+        .range(from, to)
     );
-    setReorderItems(reorderFiltered);
+    const byProduct: Record<string, { quantity: number; products: any }> = {};
+    rows
+      .filter((l: any) => l.is_active !== false)
+      .forEach((l: any) => {
+        const p = l.products;
+        if (!p?.id) return;
+        if (!byProduct[p.id]) byProduct[p.id] = { quantity: 0, products: p };
+        byProduct[p.id].quantity += l.quantity || 0;
+      });
+    const totals = Object.values(byProduct);
+    setLowStockItems(
+      totals
+        .filter(
+          (t) =>
+            (t.products.reorder_point ?? 0) > 0 &&
+            t.quantity > 0 &&
+            t.quantity <= t.products.reorder_point
+        )
+        .sort((a, b) => a.quantity - b.quantity)
+        .slice(0, 20)
+    );
+    setReorderItems(
+      totals
+        .filter(
+          (t) =>
+            (t.products.reorder_point ?? 0) > 0 &&
+            t.quantity <= t.products.reorder_point
+        )
+        .sort((a, b) => a.quantity - b.quantity)
+        .slice(0, 50)
+    );
   }
 
   async function loadActivity() {
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-    const [{ data: recent }, { data: dailyScans }, { data: staffScans }] =
-      await Promise.all([
-        supabase
-          .from("scan_history")
-          .select("*, products(name), profiles:scanned_by(full_name)")
-          .eq("warehouse_id", warehouseId)
-          .order("scanned_at", { ascending: false })
-          .limit(25),
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 86_400_000).toISOString();
+    // NOTE: no `profiles:scanned_by(...)` embed here — scan_history.scanned_by
+    // FKs to auth.users, so PostgREST can't resolve that relationship and the
+    // whole query errored (this tab used to render permanently empty). Names
+    // are joined client-side from app.profiles below.
+    const [{ data: recent }, dailyScans, staffScans] = await Promise.all([
+      supabase
+        .from("scan_history")
+        .select("*, products(name)")
+        .eq("warehouse_id", warehouseId)
+        .order("scanned_at", { ascending: false })
+        .limit(25),
+      fetchAllPages((from, to) =>
         supabase
           .from("scan_history")
           .select("scanned_at")
           .eq("warehouse_id", warehouseId)
-          .gte("scanned_at", sevenDaysAgo.toISOString()),
+          .gte("scanned_at", sevenDaysAgo.toISOString())
+          .order("scanned_at", { ascending: false })
+          .range(from, to)
+      ),
+      // Last 30 days — all-time truncated at 1000 rows anyway.
+      fetchAllPages((from, to) =>
         supabase
           .from("scan_history")
-          .select("scanned_by, profiles:scanned_by(full_name)")
-          .eq("warehouse_id", warehouseId),
-      ]);
-    setRecentActivity(recent || []);
+          .select("scanned_by")
+          .eq("warehouse_id", warehouseId)
+          .gte("scanned_at", thirtyDaysAgo)
+          .order("scanned_at", { ascending: false })
+          .range(from, to)
+      ),
+    ]);
+
+    // Client-side profile join for scanner names.
+    const userIds = Array.from(
+      new Set(
+        [
+          ...(recent || []).map((s: any) => s.scanned_by),
+          ...staffScans.map((s: any) => s.scanned_by),
+        ].filter(Boolean)
+      )
+    );
+    const nameById: Record<string, string> = {};
+    if (userIds.length > 0) {
+      const { data: profs } = await supabase
+        .from("profiles")
+        .select("id, full_name")
+        .in("id", userIds);
+      (profs || []).forEach((p: any) => {
+        if (p.full_name) nameById[p.id] = p.full_name;
+      });
+    }
+    setRecentActivity(
+      (recent || []).map((s: any) => ({
+        ...s,
+        profiles: { full_name: nameById[s.scanned_by] ?? null },
+      }))
+    );
 
     // Daily activity for last 7 days
     const dayMap: Record<string, number> = {};
@@ -293,7 +376,7 @@ export default function AnalyticsScreen() {
       d.setDate(d.getDate() - i);
       dayMap[d.toLocaleDateString([], { weekday: "short" })] = 0;
     }
-    (dailyScans || []).forEach((s: any) => {
+    dailyScans.forEach((s: any) => {
       const day = new Date(s.scanned_at).toLocaleDateString([], {
         weekday: "short",
       });
@@ -303,36 +386,44 @@ export default function AnalyticsScreen() {
       Object.entries(dayMap).map(([date, count]) => ({ date, count }))
     );
 
-    // Staff productivity
+    // Staff productivity (last 30d)
     const staffMap: Record<string, { name: string; count: number }> = {};
-    (staffScans || []).forEach((s: any) => {
+    staffScans.forEach((s: any) => {
       const id = s.scanned_by || "unknown";
       if (!staffMap[id])
-        staffMap[id] = {
-          name: (s.profiles as any)?.full_name || "Unknown",
-          count: 0,
-        };
+        staffMap[id] = { name: nameById[id] || "Unknown", count: 0 };
       staffMap[id].count++;
     });
     setStaffActivity(Object.values(staffMap).sort((a, b) => b.count - a.count));
   }
 
   async function loadOperations() {
-    const [{ data: orders }, { data: pos }, { data: returns }] =
-      await Promise.all([
+    const [orders, pos, returns] = await Promise.all([
+      fetchAllPages((from, to) =>
         supabase
           .from("orders")
           .select("status")
-          .eq("warehouse_id", warehouseId),
+          .eq("warehouse_id", warehouseId)
+          .order("id")
+          .range(from, to)
+      ),
+      fetchAllPages((from, to) =>
         supabase
           .from("purchase_orders")
           .select("status")
-          .eq("warehouse_id", warehouseId),
+          .eq("warehouse_id", warehouseId)
+          .order("id")
+          .range(from, to)
+      ),
+      fetchAllPages((from, to) =>
         supabase
           .from("returns")
           .select("disposition")
-          .eq("warehouse_id", warehouseId),
-      ]);
+          .eq("warehouse_id", warehouseId)
+          .order("id")
+          .range(from, to)
+      ),
+    ]);
     // Orders by status
     const orderMap: Record<string, number> = {};
     (orders || []).forEach((o: any) => {
@@ -622,7 +713,7 @@ function OverviewTab({
           <Card T={T}>
             <View style={s.proportionBar}>
               {actionBreakdown.map((item: any) => {
-                const cfg = ACTION_CONFIG[item.action] || { color: "#737373" };
+                const cfg = ACTION_CONFIG[item.action] || { color: color.gray3 };
                 const pct =
                   totalActions > 0 ? (item.count / totalActions) * 100 : 0;
                 return (
@@ -639,7 +730,7 @@ function OverviewTab({
             {actionBreakdown.map((item: any) => {
               const cfg = ACTION_CONFIG[item.action] || {
                 label: item.action,
-                color: "#737373",
+                color: color.gray3,
                 icon: "circle",
               };
               const pct =
@@ -977,7 +1068,7 @@ function ActivityTab({
           {recentActivity.map((item: any, index: number) => {
             const cfg = ACTION_CONFIG[item.action] || {
               label: item.action,
-              color: "#737373",
+              color: color.gray3,
               icon: "circle",
             };
             const time = new Date(item.scanned_at);
@@ -1054,24 +1145,24 @@ function OperationsTab({ T, ordersByStatus, posByStatus, returnStats }: any) {
   // Nimbus palette only — status dots use the same badge tones as desktop:
   // gray (neutral), warning, info, gold (active), success, danger.
   const STATUS_COLORS: Record<string, string> = {
-    created: "#737373",
-    pending: "#d97706",
-    assigned: "#60a5fa",
-    in_progress: "#d4a853",
-    picked: "#e7c074",
-    packed: "#60a5fa",
-    shipped: "#22c55e",
-    delivered: "#22c55e",
-    cancelled: "#ef4444",
-    draft: "#a3a3a3",
-    submitted: "#60a5fa",
-    partial: "#d97706",
-    received: "#22c55e",
-    closed: "#737373",
-    restock: "#22c55e",
-    discount: "#d97706",
-    dispose: "#ef4444",
-    return_to_supplier: "#60a5fa",
+    created: color.gray3,
+    pending: color.warning,
+    assigned: color.info,
+    in_progress: color.accent,
+    picked: color.accentBright,
+    packed: color.info,
+    shipped: color.success,
+    delivered: color.success,
+    cancelled: color.danger,
+    draft: color.gray2,
+    submitted: color.info,
+    partial: color.warning,
+    received: color.success,
+    closed: color.gray3,
+    restock: color.success,
+    discount: color.warning,
+    dispose: color.danger,
+    return_to_supplier: color.info,
   };
 
   const totalOrders = ordersByStatus.reduce(
@@ -1103,7 +1194,7 @@ function OperationsTab({ T, ordersByStatus, posByStatus, returnStats }: any) {
               <View
                 style={[
                   s.statusDot,
-                  { backgroundColor: STATUS_COLORS[item.status] || "#737373" },
+                  { backgroundColor: STATUS_COLORS[item.status] || color.gray3 },
                 ]}
               />
               <Text
@@ -1153,7 +1244,7 @@ function OperationsTab({ T, ordersByStatus, posByStatus, returnStats }: any) {
               <View
                 style={[
                   s.statusDot,
-                  { backgroundColor: STATUS_COLORS[item.status] || "#737373" },
+                  { backgroundColor: STATUS_COLORS[item.status] || color.gray3 },
                 ]}
               />
               <Text
@@ -1201,7 +1292,7 @@ function OperationsTab({ T, ordersByStatus, posByStatus, returnStats }: any) {
                 style={[
                   s.statusDot,
                   {
-                    backgroundColor: STATUS_COLORS[item.disposition] || "#737373",
+                    backgroundColor: STATUS_COLORS[item.disposition] || color.gray3,
                   },
                 ]}
               />
@@ -1330,7 +1421,7 @@ const s = StyleSheet.create({
     ...type.monoBody,
     fontSize: 20,
     lineHeight: 24,
-    fontWeight: "700",
+    fontFamily: fontFamilyFor("mono", "700"),
   },
   kpiLabel: { ...type.labelSm, marginTop: 4 },
 
@@ -1387,7 +1478,7 @@ const s = StyleSheet.create({
     borderRadius: radius.pill,
     marginRight: space.s12,
   },
-  sectionCode: { ...type.bodySm, fontWeight: "600", marginBottom: 4 },
+  sectionCode: { ...type.bodySm, fontFamily: fontFamilyFor("display", "600"), marginBottom: 4 },
   sectionQty: { ...type.monoBody, fontSize: 16 },
   sectionCap: { ...type.labelSm, marginTop: 1 },
   fillBarBg: {
@@ -1437,7 +1528,7 @@ const s = StyleSheet.create({
     alignItems: "center",
     paddingVertical: space.s12,
   },
-  listTitle: { ...type.body, fontWeight: "600" },
+  listTitle: { ...type.body, fontFamily: fontFamilyFor("display", "600") },
   listSub: { ...type.monoSm, marginTop: 2 },
   alertDot: {
     width: 8,
@@ -1496,7 +1587,7 @@ const s = StyleSheet.create({
   },
   auditLine: { flex: 1, width: 1, marginTop: -1 },
   auditBody: { flex: 1, paddingLeft: space.s12, paddingBottom: space.s16 },
-  auditProduct: { ...type.body, fontWeight: "600" },
+  auditProduct: { ...type.body, fontFamily: fontFamilyFor("display", "600") },
   auditMeta: { flexDirection: "row", alignItems: "center", marginTop: 4 },
   auditChip: {
     paddingHorizontal: space.s8,

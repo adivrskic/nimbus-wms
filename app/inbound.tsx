@@ -19,7 +19,7 @@
  */
 
 import { useFocusEffect, useRouter } from "expo-router";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -88,9 +88,14 @@ export default function InboundScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [openAsn, setOpenAsn] = useState<Asn | null>(null);
 
+  // Ref, not a dep — a `refreshing` dependency re-fired the focus effect on
+  // every pull-to-refresh.
+  const refreshingRef = useRef(false);
+  refreshingRef.current = refreshing;
+
   const load = useCallback(async () => {
     if (!wh.warehouseId) return;
-    if (!refreshing) setLoading(true);
+    if (!refreshingRef.current) setLoading(true);
     const { data } = await supabase
       .from("asns")
       .select(
@@ -103,7 +108,7 @@ export default function InboundScreen() {
     if (data) setAsns(data as unknown as Asn[]);
     setLoading(false);
     setRefreshing(false);
-  }, [wh.warehouseId, refreshing]);
+  }, [wh.warehouseId]);
 
   useFocusEffect(
     useCallback(() => {
@@ -306,28 +311,49 @@ function AsnReceiveSheet({
     if (qty <= 0) return null;
     const now = new Date().toISOString();
 
-    const { error: lineErr } = await supabase
+    // Compare-and-set: increments computed from React state let two devices
+    // receiving the same pallet double-apply or lose updates. Only write if
+    // the row still holds the value this device loaded.
+    let lineCas = supabase
       .from("asn_lines")
       .update({ quantity_received: (line.quantity_received ?? 0) + qty })
       .eq("id", line.id);
+    lineCas =
+      line.quantity_received == null
+        ? lineCas.is("quantity_received", null)
+        : lineCas.eq("quantity_received", line.quantity_received);
+    const { data: lineRows, error: lineErr } = await lineCas.select("id");
     if (lineErr) return lineErr.message;
+    if (!lineRows || lineRows.length === 0)
+      return "Line was received on another device — pull to refresh";
 
     if (line.po_line_id) {
-      const { data: poLine } = await supabase
-        .from("po_line_items")
-        .select("id, quantity_received")
-        .eq("id", line.po_line_id)
-        .maybeSingle();
-      if (poLine) {
-        const { error: poLineErr } = await supabase
+      // Fresh read + CAS, retried once — the reconcile must not double-count.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const { data: poLine } = await supabase
+          .from("po_line_items")
+          .select("id, quantity_received")
+          .eq("id", line.po_line_id)
+          .maybeSingle();
+        if (!poLine) break;
+        const prev = (poLine as any).quantity_received as number | null;
+        let poCas = supabase
           .from("po_line_items")
           .update({
-            quantity_received: ((poLine as any).quantity_received ?? 0) + qty,
+            quantity_received: (prev ?? 0) + qty,
             received_at: now,
             received_by: userId,
           })
           .eq("id", line.po_line_id);
+        poCas =
+          prev == null
+            ? poCas.is("quantity_received", null)
+            : poCas.eq("quantity_received", prev);
+        const { data: poRows, error: poLineErr } = await poCas.select("id");
         if (poLineErr) return poLineErr.message;
+        if (poRows && poRows.length > 0) break;
+        if (attempt === 1)
+          return "PO line changed on another device — ASN received, PO reconcile skipped; pull to refresh";
       }
     }
 
@@ -364,13 +390,15 @@ function AsnReceiveSheet({
           : anyReceived
           ? "partially_received"
           : "sent";
-        await supabase
+        const { error: poStatusErr } = await supabase
           .from("purchase_orders")
           .update({
             status,
             ...(allReceived ? { received_at: new Date().toISOString() } : {}),
           })
           .eq("id", asn.po_id);
+        if (poStatusErr && __DEV__)
+          console.warn("[inbound] PO status recompute failed", poStatusErr);
       }
     }
 
@@ -383,7 +411,7 @@ function AsnReceiveSheet({
       (allLines as any[]).every(
         (l) => (l.quantity_received ?? 0) >= l.quantity_expected
       );
-    await supabase
+    const { error: asnStatusErr } = await supabase
       .from("asns")
       .update(
         complete
@@ -391,6 +419,8 @@ function AsnReceiveSheet({
           : { status: "in_transit" }
       )
       .eq("id", asn.id);
+    if (asnStatusErr && __DEV__)
+      console.warn("[inbound] ASN status recompute failed", asnStatusErr);
     return complete;
   }
 

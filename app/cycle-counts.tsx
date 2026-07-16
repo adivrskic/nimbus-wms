@@ -17,7 +17,7 @@
  */
 
 import { useFocusEffect, useRouter } from "expo-router";
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState, useRef } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -36,7 +36,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { adjustmentNeedsApproval } from "../lib/adjustments";
 import { ScreenHeader } from "../lib/nimbus/Header";
 import { Icon } from "../lib/nimbus/Icon";
-import { layout, space, type } from "../lib/nimbus/tokens";
+import { color, layout, space, type } from "../lib/nimbus/tokens";
 import { supabase } from "../lib/supabase";
 import { useTheme } from "../lib/theme";
 import { haptic, showToast } from "../lib/ui";
@@ -97,9 +97,14 @@ export default function CycleCountsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [runTask, setRunTask] = useState<CountTask | null>(null);
 
+  // Ref, not a dep — a `refreshing` dependency re-fired the focus effect on
+  // every pull-to-refresh.
+  const refreshingRef = useRef(false);
+  refreshingRef.current = refreshing;
+
   const load = useCallback(async () => {
     if (!wh.warehouseId) return;
-    if (!refreshing) setLoading(true);
+    if (!refreshingRef.current) setLoading(true);
     const { data } = await supabase
       .from("cycle_count_tasks")
       .select(
@@ -112,7 +117,7 @@ export default function CycleCountsScreen() {
     if (data) setTasks(data as unknown as CountTask[]);
     setLoading(false);
     setRefreshing(false);
-  }, [wh.warehouseId, refreshing]);
+  }, [wh.warehouseId]);
 
   useFocusEffect(
     useCallback(() => {
@@ -314,6 +319,23 @@ function CountRunSheet({
     let noVariance = 0;
     let failed: string | null = null;
 
+    // The approval decision must use CURRENT on-hand, not the value from when
+    // the sheet opened — stock may have moved during a long blind count, and
+    // record_cycle_count trusts the p_needs_approval flag blindly.
+    const freshById: Record<string, number> = {};
+    {
+      const { data: fresh } = await supabase
+        .from("locations")
+        .select("id, quantity")
+        .in(
+          "id",
+          locations.map((l) => l.id)
+        );
+      (fresh ?? []).forEach((f: any) => {
+        freshById[f.id] = f.quantity ?? 0;
+      });
+    }
+
     for (const loc of locations) {
       const counted = parseInt(counts[loc.id], 10);
       if (Number.isNaN(counted) || counted < 0) {
@@ -321,7 +343,7 @@ function CountRunSheet({
         break;
       }
       // Same governance as the desk: threshold + the cycle_count reason.
-      const delta = counted - (loc.quantity ?? 0);
+      const delta = counted - (freshById[loc.id] ?? loc.quantity ?? 0);
       const needsApproval =
         delta !== 0 &&
         (await adjustmentNeedsApproval(
@@ -357,7 +379,7 @@ function CountRunSheet({
     }
 
     // Counting the product completes its queue task (desk parity).
-    await supabase
+    const { error: taskErr } = await supabase
       .from("cycle_count_tasks")
       .update({
         status: "completed",
@@ -366,6 +388,15 @@ function CountRunSheet({
       })
       .eq("id", task.id)
       .eq("status", "pending");
+    if (taskErr) {
+      setSubmitting(false);
+      Alert.alert(
+        "Task not closed",
+        `Counts were recorded, but the queue task could not be completed: ${taskErr.message}`
+      );
+      onDone();
+      return;
+    }
 
     setSubmitting(false);
     haptic.success();
@@ -547,7 +578,7 @@ function CountRunSheet({
               style={[
                 type.label,
                 {
-                  color: allEntered ? "#000" : T.textDim,
+                  color: allEntered ? color.black : T.textDim,
                   letterSpacing: 2,
                 },
               ]}

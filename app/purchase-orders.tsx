@@ -26,7 +26,7 @@
  */
 
 import { useFocusEffect, useRouter } from "expo-router";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -48,6 +48,7 @@ import { color, layout, space, type } from "../lib/nimbus/tokens";
 import { supabase } from "../lib/supabase";
 import { useTheme } from "../lib/theme";
 import { haptic } from "../lib/ui";
+import { usePermissions } from "../lib/permissions";
 import { useWarehouse } from "../lib/warehouse";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -172,6 +173,7 @@ export default function PurchaseOrdersScreen() {
   const T = useTheme();
   const router = useRouter();
   const wh = useWarehouse();
+  const perms = usePermissions();
 
   const [pos, setPos] = useState<PoRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -179,9 +181,14 @@ export default function PurchaseOrdersScreen() {
   const [activeFilter, setActiveFilter] = useState("open");
   const [createOpen, setCreateOpen] = useState(false);
 
+  // Ref, not a dep — a `refreshing` dependency re-fired the focus effect on
+  // every pull-to-refresh.
+  const refreshingRef = useRef(false);
+  refreshingRef.current = refreshing;
+
   const load = useCallback(async () => {
     if (!wh.warehouseId) return;
-    if (!refreshing) setLoading(true);
+    if (!refreshingRef.current) setLoading(true);
     const { data } = await supabase
       .from("purchase_orders")
       .select(
@@ -194,7 +201,7 @@ export default function PurchaseOrdersScreen() {
     if (data) setPos(data as unknown as PoRow[]);
     setLoading(false);
     setRefreshing(false);
-  }, [wh.warehouseId, refreshing]);
+  }, [wh.warehouseId]);
 
   useFocusEffect(
     useCallback(() => {
@@ -224,18 +231,20 @@ export default function PurchaseOrdersScreen() {
           </Pressable>
         }
         trailing={
-          <Pressable
-            onPress={() => {
-              haptic.light();
-              setCreateOpen(true);
-            }}
-            hitSlop={10}
-            accessibilityLabel="New purchase order"
-          >
-            <Text style={[type.label, { color: T.accent, letterSpacing: 2 }]}>
-              + NEW
-            </Text>
-          </Pressable>
+          perms.canCreatePurchaseOrders ? (
+            <Pressable
+              onPress={() => {
+                haptic.light();
+                setCreateOpen(true);
+              }}
+              hitSlop={10}
+              accessibilityLabel="New purchase order"
+            >
+              <Text style={[type.label, { color: T.accent, letterSpacing: 2 }]}>
+                + NEW
+              </Text>
+            </Pressable>
+          ) : undefined
         }
       />
 
@@ -786,6 +795,7 @@ function AddLineItemSheet({
   theme: ReturnType<typeof useTheme>;
 }) {
   const insets = useSafeAreaInsets();
+  const { orgId } = useWarehouse();
   const [code, setCode] = useState("");
   const [found, setFound] = useState<ProductLite | null>(null);
   const [searching, setSearching] = useState(false);
@@ -804,13 +814,17 @@ function AddLineItemSheet({
   }, [open]);
 
   async function lookup() {
-    if (!code.trim()) return;
+    // Sanitize before interpolating into the PostgREST .or() filter — a
+    // scanned value containing , ( ) . injects extra filter clauses.
+    const term = code.trim().replace(/[^A-Za-z0-9_-]/g, "");
+    if (!term) return;
     setSearching(true);
     try {
       const { data } = await supabase
         .from("products")
         .select("id, name, barcode, internal_sku")
-        .or(`barcode.eq.${code.trim()},internal_sku.eq.${code.trim()}`)
+        .eq("org_id", orgId)
+        .or(`barcode.eq.${term},internal_sku.eq.${term}`)
         .limit(1)
         .maybeSingle();
       setFound((data as unknown as ProductLite) ?? null);

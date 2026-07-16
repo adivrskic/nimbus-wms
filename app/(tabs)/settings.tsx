@@ -40,12 +40,13 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { APP_CONFIG } from "../../lib/config";
 import { LINKS } from "../../lib/links";
 import { ScreenHeader } from "../../lib/nimbus/Header";
 import { Icon, IconName } from "../../lib/nimbus/Icon";
 import { layout, space, type } from "../../lib/nimbus/tokens";
 import { usePermissions } from "../../lib/permissions";
-import { clearCredentials, supabase } from "../../lib/supabase";
+import { signOutDevice, supabase } from "../../lib/supabase";
 import { useTheme, useThemeToggle } from "../../lib/theme";
 import { haptic } from "../../lib/ui";
 import { useWarehouse } from "../../lib/warehouse";
@@ -54,13 +55,10 @@ import { useWarehouse } from "../../lib/warehouse";
 // CONSTANTS
 // ─────────────────────────────────────────────────────────────────────────────
 
-// TODO: if your project has lib/config.ts with APP_CONFIG, import that
-// and remove this fallback. Keeping the hardcoded value avoids a build
-// break if the import path differs across environments.
 const APP_INFO = {
-  productName: "Nautilus Inventory",
-  clientName: "Nautilus Inventory",
-  version: "1.0.0",
+  productName: APP_CONFIG.productName,
+  clientName: APP_CONFIG.clientName,
+  version: APP_CONFIG.version,
 };
 
 // Preference keys. `nimbus_pref_biometric` is also read by lib/auth.tsx to
@@ -101,15 +99,15 @@ export default function SettingsScreen() {
   const [facilitySheetOpen, setFacilitySheetOpen] = useState(false);
   const [placeholderSheet, setPlaceholderSheet] = useState<string | null>(null);
 
-  // Hydrate persisted preferences. Biometric defaults to on (matches
-  // lib/auth.tsx, which treats a missing value as enabled).
+  // Hydrate persisted preferences. Biometric is opt-in (matches lib/auth.tsx,
+  // which only gates the restored session when the value is "true").
   useEffect(() => {
     (async () => {
       const [bio, notif] = await Promise.all([
         AsyncStorage.getItem(PREF_BIOMETRIC),
         AsyncStorage.getItem(PREF_NOTIFICATIONS),
       ]);
-      setBiometricEnabled(bio !== "false");
+      setBiometricEnabled(bio === "true");
       setNotificationsEnabled(notif !== "false");
     })();
   }, []);
@@ -150,14 +148,11 @@ export default function SettingsScreen() {
           style: "destructive",
           onPress: async () => {
             haptic.medium();
-            // Clear the stored credentials + biometric fast-path first, so a
-            // signed-out device can't be biometric-unlocked back into this
-            // account (lib/auth.tsx reads these on launch).
-            try {
-              await clearCredentials();
-              await AsyncStorage.setItem(PREF_BIOMETRIC, "false");
-            } catch {}
-            await supabase.auth.signOut();
+            // signOutDevice also scrubs the offline queue + caches so the
+            // next operator on a shared scanner can't sync or read the
+            // previous account's data. No credentials are stored anymore —
+            // biometrics gate the persisted session, which signOut revokes.
+            await signOutDevice();
           },
         },
       ]

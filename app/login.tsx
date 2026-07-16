@@ -453,7 +453,7 @@ const styles = StyleSheet.create({
     paddingVertical: space.s12,
     borderWidth: 1,
     borderLeftWidth: 4,
-    backgroundColor: "rgba(197,48,48,0.04)",
+    backgroundColor: color.dangerDim,
   },
 
   // Primary
