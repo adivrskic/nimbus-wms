@@ -787,6 +787,10 @@ function ReceiveRunSheet({
   // Lot-tracked lines detour through this overlay to capture lot + expiry
   // before the receive writes (mirrors desktop receiveLineItem lot capture).
   const [lotTarget, setLotTarget] = useState<PoLineItem | null>(null);
+  // Qty carried through the lot detour for partial receives (null = full).
+  const [pendingQty, setPendingQty] = useState<number | null>(null);
+  // Long-press target for the partial-quantity sheet.
+  const [partialTarget, setPartialTarget] = useState<PoLineItem | null>(null);
 
   const totalExpected = items.reduce((s, i) => s + i.quantity_expected, 0);
   const totalReceived = items.reduce((s, i) => s + receivedQty(i), 0);
@@ -794,7 +798,8 @@ function ReceiveRunSheet({
   const remaining = items.filter((i) => !isFullyReceived(i));
   const completed = items.filter(isFullyReceived);
 
-  function receiveItem(item: PoLineItem) {
+  /** Tap = full remaining; long-press routes here with a partial qty. */
+  function receiveItem(item: PoLineItem, qty?: number) {
     if (isFullyReceived(item) || receivingId) return;
     // Receives write directly — they are NOT queued by the offline layer.
     if (!isOnline) {
@@ -806,10 +811,11 @@ function ReceiveRunSheet({
     }
     if (item.products?.track_lots && item.product_id) {
       haptic.light();
+      setPendingQty(qty ?? null);
       setLotTarget(item);
       return;
     }
-    void commitReceive(item, null);
+    void commitReceive(item, null, qty);
   }
 
   /** Find-or-create the lot for this org+product, mirroring desktop. */
@@ -844,9 +850,11 @@ function ReceiveRunSheet({
 
   async function commitReceive(
     item: PoLineItem,
-    lot: { number: string; expiry: string | null } | null
+    lot: { number: string; expiry: string | null } | null,
+    qty?: number
   ) {
     setLotTarget(null);
+    setPendingQty(null);
     setReceivingId(item.id);
     haptic.medium();
     try {
@@ -859,13 +867,20 @@ function ReceiveRunSheet({
         lotId = await resolveLot(item, lot, userId);
       }
 
+      // Partial-aware: default (tap) receives the full remaining qty; a
+      // long-press qty receives part of it and the line stays in REMAINING.
+      const already = item.quantity_received ?? 0;
+      const maxQty = item.quantity_expected - already;
+      const qtyReceived = Math.min(Math.max(qty ?? maxQty, 0), maxQty);
+      if (qtyReceived <= 0) return;
+
       // Compare-and-set: two devices receiving the same line used to both
       // "succeed" from stale state. Only apply if the received qty is still
       // what this device loaded.
       let casQuery = supabase
         .from("po_line_items")
         .update({
-          quantity_received: item.quantity_expected,
+          quantity_received: already + qtyReceived,
           received_by: userId,
           received_at: now,
           ...(lotId
@@ -895,7 +910,7 @@ function ReceiveRunSheet({
           warehouse_id: po.warehouse_id,
           scanned_by: userId,
           action: "receive",
-          quantity: item.quantity_expected,
+          quantity: qtyReceived,
           notes: `PO ${po.po_number} · ${po.supplier_name}`,
           org_id: po.org_id,
         });
@@ -906,8 +921,6 @@ function ReceiveRunSheet({
       // Optional putaway. Receiving alone deliberately does NOT create
       // on-hand (desk parity — putaway is the explicit motion that does);
       // offering it here saves the walk back to the scanner screen.
-      const qtyReceived =
-        item.quantity_expected - (item.quantity_received ?? 0);
       if (item.product_id && qtyReceived > 0) {
         void offerPutaway(item, qtyReceived);
       }
@@ -1091,6 +1104,18 @@ function ReceiveRunSheet({
               >
                 REMAINING · {String(remaining.length).padStart(2, "0")}
               </Text>
+              <Text
+                style={[
+                  type.monoSm,
+                  {
+                    color: T.textDim,
+                    paddingHorizontal: layout.contentPaddingH,
+                    paddingBottom: space.s8,
+                  },
+                ]}
+              >
+                Tap = receive all remaining · hold = partial quantity
+              </Text>
               <View style={[styles.runList, { borderColor: T.borderSubtle }]}>
                 {remaining.map((item, idx) => (
                   <RunRow
@@ -1099,6 +1124,10 @@ function ReceiveRunSheet({
                     isReceiving={receivingId === item.id}
                     isLast={idx === remaining.length - 1}
                     onPress={() => receiveItem(item)}
+                    onLongPress={() => {
+                      haptic.light();
+                      setPartialTarget(item);
+                    }}
                     theme={T}
                   />
                 ))}
@@ -1182,12 +1211,28 @@ function ReceiveRunSheet({
           </View>
         ) : null}
 
+        {partialTarget ? (
+          <PartialQtySheet
+            item={partialTarget}
+            theme={T}
+            onSubmit={(qty) => {
+              setPartialTarget(null);
+              receiveItem(partialTarget, qty);
+            }}
+            onCancel={() => setPartialTarget(null)}
+          />
+        ) : null}
+
         {lotTarget ? (
           <LotCaptureOverlay
             item={lotTarget}
             theme={T}
-            onSubmit={(lot) => void commitReceive(lotTarget, lot)}
-            onSkip={() => void commitReceive(lotTarget, null)}
+            onSubmit={(lot) =>
+              void commitReceive(lotTarget, lot, pendingQty ?? undefined)
+            }
+            onSkip={() =>
+              void commitReceive(lotTarget, null, pendingQty ?? undefined)
+            }
             onCancel={() => setLotTarget(null)}
           />
         ) : null}
@@ -1350,11 +1395,124 @@ function LotCaptureOverlay({
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// PARTIAL QUANTITY SHEET — long-press a remaining line to receive part of it
+// (short shipments, split pallets). Tap stays = full remaining.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function PartialQtySheet({
+  item,
+  theme: T,
+  onSubmit,
+  onCancel,
+}: {
+  item: PoLineItem;
+  theme: ReturnType<typeof useTheme>;
+  onSubmit: (qty: number) => void;
+  onCancel: () => void;
+}) {
+  const insets = useSafeAreaInsets();
+  const maxQty = item.quantity_expected - receivedQty(item);
+  const [qty, setQty] = useState(String(maxQty));
+  const [error, setError] = useState<string | null>(null);
+
+  function submit() {
+    const n = parseInt(qty, 10);
+    if (Number.isNaN(n) || n < 1 || n > maxQty) {
+      setError(`Enter a whole number between 1 and ${maxQty}.`);
+      return;
+    }
+    haptic.medium();
+    onSubmit(n);
+  }
+
+  return (
+    <View style={[styles.lotWrap, { backgroundColor: T.bg }]}>
+      <View
+        style={[
+          styles.runTopBar,
+          {
+            borderBottomColor: T.borderSubtle,
+            paddingTop: insets.top || space.s16,
+          },
+        ]}
+      >
+        <Pressable onPress={onCancel} hitSlop={10} accessibilityLabel="Cancel">
+          <Text style={[type.label, { color: T.textMuted, letterSpacing: 2 }]}>
+            CANCEL
+          </Text>
+        </Pressable>
+        <Text style={[type.label, { color: T.accent, letterSpacing: 2 }]}>
+          PARTIAL RECEIVE
+        </Text>
+        <View style={{ width: 48 }} />
+      </View>
+
+      <View style={{ padding: layout.contentPaddingH, gap: space.s12 }}>
+        <Text style={[type.bodyLg, { color: T.text }]} numberOfLines={2}>
+          {displayName(item)}
+        </Text>
+        <Text style={[type.monoSm, { color: T.textMuted }]}>
+          {receivedQty(item)} of {item.quantity_expected} received · up to{" "}
+          {maxQty} remaining. The line stays open until fully received.
+        </Text>
+
+        <View
+          style={[
+            styles.lotField,
+            { borderColor: T.borderSubtle, backgroundColor: T.surface2 },
+          ]}
+        >
+          <Text style={[type.labelSm, { color: T.textMuted, letterSpacing: 1.5 }]}>
+            QUANTITY TO RECEIVE
+          </Text>
+          <TextInput
+            value={qty}
+            onChangeText={(v) => {
+              setQty(v.replace(/[^0-9]/g, ""));
+              setError(null);
+            }}
+            placeholder={String(maxQty)}
+            placeholderTextColor={T.textDim}
+            keyboardType="number-pad"
+            autoFocus
+            style={[type.monoBody, { color: T.text, padding: 0, marginTop: 6 }]}
+          />
+        </View>
+
+        {error ? (
+          <View
+            style={[
+              styles.lotError,
+              { borderLeftColor: T.danger, backgroundColor: T.dangerDim },
+            ]}
+          >
+            <Text style={[type.monoSm, { color: T.danger }]}>{error}</Text>
+          </View>
+        ) : null}
+
+        <Pressable
+          onPress={submit}
+          style={({ pressed }) => [
+            styles.lotSubmit,
+            { backgroundColor: pressed ? T.accentBright : T.accent },
+          ]}
+        >
+          <Text style={[type.label, { color: color.black, letterSpacing: 2 }]}>
+            RECEIVE {qty || "0"} UNIT{qty === "1" ? "" : "S"}
+          </Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
 function RunRow({
   item,
   isReceiving,
   isLast,
   onPress,
+  onLongPress,
   completed,
   theme: T,
 }: {
@@ -1362,12 +1520,16 @@ function RunRow({
   isReceiving: boolean;
   isLast: boolean;
   onPress: () => void;
+  /** Opens the partial-quantity sheet (tap = full remaining). */
+  onLongPress?: () => void;
   completed?: boolean;
   theme: ReturnType<typeof useTheme>;
 }) {
   return (
     <Pressable
       onPress={onPress}
+      onLongPress={onLongPress}
+      delayLongPress={350}
       disabled={completed || isReceiving}
       style={({ pressed }) => [
         styles.runRow,

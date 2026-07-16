@@ -29,11 +29,14 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
+import { CameraView, useCameraPermissions } from "expo-camera";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { fefoSuggestions, type FefoSuggestion } from "../lib/fefo";
+import { useOffline } from "../lib/offline";
 import { ScreenHeader } from "../lib/nimbus/Header";
 import { Icon } from "../lib/nimbus/Icon";
 import { color, layout, space, type } from "../lib/nimbus/tokens";
@@ -335,10 +338,12 @@ function WaveRunSheet({
 }) {
   const insets = useSafeAreaInsets();
   const { orgId } = useWarehouse();
+  const { isOnline } = useOffline();
 
   const [orders, setOrders] = useState<WaveOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [pickingId, setPickingId] = useState<string | null>(null);
+  const [verifyLine, setVerifyLine] = useState<WaveLine | null>(null);
   const [completing, setCompleting] = useState(false);
   const [fefoHints, setFefoHints] = useState<Map<string, FefoSuggestion>>(
     new Map()
@@ -398,8 +403,29 @@ function WaveRunSheet({
   const done = lines.filter(linePicked);
   const allPicked = lines.length > 0 && remaining.length === 0;
 
-  async function pickLine(line: WaveLine) {
+  function pickLine(line: WaveLine) {
     if (pickingId || linePicked(line)) return;
+    // Picks are an atomic RPC — they are NOT queued by the offline layer.
+    if (!isOnline) {
+      Alert.alert(
+        "You're offline",
+        "Picking needs a connection — the pick RPC can't be queued. Reconnect and try again."
+      );
+      return;
+    }
+    haptic.light();
+    // Same scan-to-verify gate as the single-order run: confirm the physical
+    // product (or explicitly skip) before the pick commits. Lines with no
+    // barcode/SKU on record have nothing to verify against — pick directly.
+    if (!line.products?.barcode && !line.products?.internal_sku) {
+      void commitPickLine(line);
+      return;
+    }
+    setVerifyLine(line);
+  }
+
+  async function commitPickLine(line: WaveLine) {
+    setVerifyLine(null);
     setPickingId(line.id);
     haptic.medium();
     const order = orders.find((o) => o.id === line.orderId);
@@ -578,8 +604,174 @@ function WaveRunSheet({
             </Pressable>
           </View>
         ) : null}
+
+        {verifyLine ? (
+          <WaveScanVerifyOverlay
+            line={verifyLine}
+            theme={T}
+            onVerified={() => void commitPickLine(verifyLine)}
+            onCancel={() => setVerifyLine(null)}
+          />
+        ) : null}
       </View>
     </Modal>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SCAN-TO-VERIFY OVERLAY — same gate as the single-order run: confirm the
+// physical product before pick_order_item fires. Camera scan when permitted,
+// manual entry always, explicit skip fallback.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function WaveScanVerifyOverlay({
+  line,
+  theme: T,
+  onVerified,
+  onCancel,
+}: {
+  line: WaveLine;
+  theme: ReturnType<typeof useTheme>;
+  onVerified: () => void;
+  onCancel: () => void;
+}) {
+  const insets = useSafeAreaInsets();
+  const [permission] = useCameraPermissions();
+  const [manual, setManual] = useState("");
+  const [mismatch, setMismatch] = useState<string | null>(null);
+  const handled = useRef(false);
+
+  function matches(code: string): boolean {
+    const c = code.trim().toLowerCase();
+    if (!c) return false;
+    return (
+      c === (line.products?.barcode ?? "").trim().toLowerCase() ||
+      c === (line.products?.internal_sku ?? "").trim().toLowerCase()
+    );
+  }
+
+  function handleCode(code: string) {
+    if (handled.current) return;
+    if (matches(code)) {
+      handled.current = true;
+      haptic.success();
+      onVerified();
+    } else {
+      haptic.warning();
+      setMismatch(code.trim());
+    }
+  }
+
+  return (
+    <View style={[styles.verifyWrap, { backgroundColor: T.bg }]}>
+      <View
+        style={[
+          styles.runTopBar,
+          {
+            borderBottomColor: T.borderSubtle,
+            paddingTop: insets.top || space.s16,
+          },
+        ]}
+      >
+        <Pressable onPress={onCancel} hitSlop={10} accessibilityLabel="Cancel">
+          <Text style={[type.label, { color: T.textMuted, letterSpacing: 2 }]}>
+            CANCEL
+          </Text>
+        </Pressable>
+        <Text style={[type.label, { color: T.accent, letterSpacing: 2 }]}>
+          VERIFY PICK
+        </Text>
+        <View style={{ width: 48 }} />
+      </View>
+
+      <View style={{ padding: layout.contentPaddingH, gap: space.s12 }}>
+        <Text style={[type.bodyLg, { color: T.text }]} numberOfLines={2}>
+          {line.products?.name ?? "Unknown product"}
+        </Text>
+        <Text style={[type.monoSm, { color: T.textMuted }]}>
+          {line.orderNumber} · Scan or enter{" "}
+          {line.products?.barcode
+            ? `barcode ${line.products.barcode}`
+            : `SKU ${line.products?.internal_sku}`}
+        </Text>
+      </View>
+
+      {permission?.granted ? (
+        <View style={[styles.verifyCamera, { borderColor: T.borderSubtle }]}>
+          <CameraView
+            style={{ flex: 1 }}
+            barcodeScannerSettings={{
+              barcodeTypes: [
+                "ean13",
+                "ean8",
+                "upc_a",
+                "upc_e",
+                "code128",
+                "code39",
+                "code93",
+                "itf14",
+                "qr",
+              ],
+            }}
+            onBarcodeScanned={({ data }) => handleCode(data)}
+          />
+        </View>
+      ) : null}
+
+      <View style={{ padding: layout.contentPaddingH, gap: space.s12 }}>
+        <View
+          style={[
+            styles.verifyField,
+            { borderColor: T.borderSubtle, backgroundColor: T.surface2 },
+          ]}
+        >
+          <TextInput
+            value={manual}
+            onChangeText={(v) => {
+              setManual(v);
+              setMismatch(null);
+            }}
+            placeholder="Enter barcode / SKU"
+            placeholderTextColor={T.textDim}
+            autoCapitalize="none"
+            autoCorrect={false}
+            onSubmitEditing={() => handleCode(manual)}
+            style={[type.monoBody, { color: T.text, flex: 1, padding: 0 }]}
+          />
+          <Pressable onPress={() => handleCode(manual)} hitSlop={10}>
+            <Text style={[type.labelSm, { color: T.accent, letterSpacing: 1.5 }]}>
+              CHECK
+            </Text>
+          </Pressable>
+        </View>
+
+        {mismatch ? (
+          <View
+            style={[
+              styles.verifyMismatch,
+              { borderLeftColor: T.danger, backgroundColor: T.dangerDim },
+            ]}
+          >
+            <Text style={[type.monoSm, { color: T.danger }]}>
+              "{mismatch}" doesn't match this line — check you're holding the
+              right product.
+            </Text>
+          </View>
+        ) : null}
+
+        <Pressable
+          onPress={() => {
+            haptic.light();
+            onVerified();
+          }}
+          style={[styles.verifySkip, { borderColor: T.borderSubtle }]}
+        >
+          <Text style={[type.labelSm, { color: T.textMuted, letterSpacing: 1.5 }]}>
+            PICK WITHOUT SCAN
+          </Text>
+        </Pressable>
+      </View>
+    </View>
   );
 }
 
@@ -746,5 +938,34 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     paddingVertical: space.s16,
+  },
+
+  // Scan-to-verify overlay (mirrors app/orders/[id].tsx)
+  verifyWrap: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 10,
+  },
+  verifyCamera: {
+    marginHorizontal: layout.contentPaddingH,
+    height: 220,
+    borderWidth: 1,
+    overflow: "hidden",
+  },
+  verifyField: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.s12,
+    borderWidth: 1,
+    paddingHorizontal: space.s12,
+    paddingVertical: space.s12,
+  },
+  verifyMismatch: {
+    borderLeftWidth: 4,
+    padding: space.s12,
+  },
+  verifySkip: {
+    alignItems: "center",
+    paddingVertical: space.s12,
+    borderWidth: 1,
   },
 });
